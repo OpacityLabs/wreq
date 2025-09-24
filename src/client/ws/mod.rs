@@ -13,14 +13,14 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use futures_util::{Sink, SinkExt, Stream, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt, stream::FusedStream};
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version, header, uri::Scheme};
 use http2::ext::Protocol;
 use pin_project_lite::pin_project;
 use serde::Serialize;
 use tokio_tungstenite::tungstenite::{
     self,
-    protocol::{self, WebSocketConfig},
+    protocol::{self, CloseFrame, WebSocketConfig},
 };
 
 use self::message::{CloseCode, Message, Utf8Bytes};
@@ -549,8 +549,8 @@ pin_project! {
 impl WebSocket {
     /// Return the selected WebSocket subprotocol, if one has been chosen.
     #[inline]
-    pub fn protocol(&self) -> Option<HeaderValue> {
-        self.protocol.clone()
+    pub fn protocol(&self) -> Option<&HeaderValue> {
+        self.protocol.as_ref()
     }
 
     /// Receive another message.
@@ -571,15 +571,18 @@ impl WebSocket {
     }
 
     /// Closes the connection with a given code and (optional) reason.
-    pub async fn close<R>(mut self, code: CloseCode, reason: R) -> Result<(), Error>
+    pub async fn close<C, R>(mut self, code: C, reason: R) -> Result<(), Error>
     where
-        R: Into<Option<Utf8Bytes>>,
+        C: Into<CloseCode>,
+        R: Into<Utf8Bytes>,
     {
+        let close_frame = CloseFrame {
+            code: code.into().0.into(),
+            reason: reason.into().0,
+        };
+
         self.inner
-            .close(Some(tungstenite::protocol::CloseFrame {
-                code: code.0.into(),
-                reason: reason.into().unwrap_or(Utf8Bytes::from_static("Goodbye")).0,
-            }))
+            .close(Some(close_frame))
             .await
             .map_err(Error::websocket)
     }
@@ -618,6 +621,13 @@ impl Sink<Message> for WebSocket {
             .inner
             .poll_close(cx)
             .map_err(Error::websocket)
+    }
+}
+
+impl FusedStream for WebSocket {
+    #[inline]
+    fn is_terminated(&self) -> bool {
+        self.inner.is_terminated()
     }
 }
 

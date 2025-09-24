@@ -151,6 +151,11 @@ impl AlpnProtocol {
     }
 }
 
+/// Application-layer protocol settings for HTTP/1.1 and HTTP/2.
+/// A TLS ALPS protocol.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct AlpsProtocol(&'static [u8]);
+
 impl Serialize for AlpsProtocol {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -179,10 +184,6 @@ impl<'de> Deserialize<'de> for AlpsProtocol {
         })
     }
 }
-
-/// Application-layer protocol settings for HTTP/1.1 and HTTP/2.
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct AlpsProtocol(&'static [u8]);
 
 impl AlpsProtocol {
     /// Prefer HTTP/1.1
