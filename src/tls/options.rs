@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeStruct};
+
 use super::{
     AlpnProtocol, AlpsProtocol, CertificateCompressionAlgorithm, ExtensionType, TlsVersion,
 };
@@ -179,6 +181,397 @@ pub struct TlsOptions {
     ///
     /// **Default:** `false`
     pub random_aes_hw_override: bool,
+}
+
+impl Serialize for TlsOptions {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut tls_options = serializer.serialize_struct("TlsOptions", 26)?;
+        tls_options.serialize_field("alpn_protocols", &self.alpn_protocols)?;
+        tls_options.serialize_field("alps_protocols", &self.alps_protocols)?;
+        tls_options.serialize_field("alps_use_new_codepoint", &self.alps_use_new_codepoint)?;
+        tls_options.serialize_field("session_ticket", &self.session_ticket)?;
+        tls_options.serialize_field("min_tls_version", &self.min_tls_version)?;
+        tls_options.serialize_field("max_tls_version", &self.max_tls_version)?;
+        tls_options.serialize_field("pre_shared_key", &self.pre_shared_key)?;
+        tls_options.serialize_field("enable_ech_grease", &self.enable_ech_grease)?;
+        tls_options.serialize_field("permute_extensions", &self.permute_extensions)?;
+        tls_options.serialize_field("grease_enabled", &self.grease_enabled)?;
+        tls_options.serialize_field("enable_ocsp_stapling", &self.enable_ocsp_stapling)?;
+        tls_options.serialize_field(
+            "enable_signed_cert_timestamps",
+            &self.enable_signed_cert_timestamps,
+        )?;
+        tls_options.serialize_field("record_size_limit", &self.record_size_limit)?;
+        tls_options.serialize_field("psk_skip_session_ticket", &self.psk_skip_session_ticket)?;
+        tls_options.serialize_field("key_shares_limit", &self.key_shares_limit)?;
+        tls_options.serialize_field("psk_dhe_ke", &self.psk_dhe_ke)?;
+        tls_options.serialize_field("renegotiation", &self.renegotiation)?;
+        tls_options.serialize_field("delegated_credentials", &self.delegated_credentials)?;
+        tls_options.serialize_field("curves_list", &self.curves_list)?;
+        tls_options.serialize_field("cipher_list", &self.cipher_list)?;
+        tls_options.serialize_field("sigalgs_list", &self.sigalgs_list)?;
+
+        match self.certificate_compression_algorithms.as_ref() {
+            Some(algorithms) => {
+                let binding = algorithms
+                    .iter()
+                    .map(|algorithm| {
+                        match *algorithm {
+                            CertificateCompressionAlgorithm::ZLIB => "zlib",
+                            CertificateCompressionAlgorithm::BROTLI => "brotli",
+                            CertificateCompressionAlgorithm::ZSTD => "zstd",
+                            _ => unreachable!(),
+                        }
+                        .to_owned()
+                    })
+                    .collect::<Vec<_>>();
+
+                tls_options
+                    .serialize_field("certificate_compression_algorithms", &Some(&binding))?;
+            }
+            None => tls_options
+                .serialize_field("certificate_compression_algorithms", &None::<Vec<String>>)?,
+        };
+
+        match self.extension_permutation.as_ref() {
+            Some(ext_permutation) => {
+                let perm_vec = ext_permutation
+                    .iter()
+                    .map(|extension| {
+                        match *extension {
+                            ExtensionType::SERVER_NAME => "SERVER_NAME",
+                            ExtensionType::STATUS_REQUEST => "STATUS_REQUEST",
+                            ExtensionType::EC_POINT_FORMATS => "EC_POINT_FORMATS",
+                            ExtensionType::SIGNATURE_ALGORITHMS => "SIGNATURE_ALGORITHMS",
+                            ExtensionType::SRTP => "SRTP",
+                            ExtensionType::APPLICATION_LAYER_PROTOCOL_NEGOTIATION => {
+                                "APPLICATION_LAYER_PROTOCOL_NEGOTIATION"
+                            }
+                            ExtensionType::PADDING => "PADDING",
+                            ExtensionType::EXTENDED_MASTER_SECRET => "EXTENDED_MASTER_SECRET",
+                            ExtensionType::QUIC_TRANSPORT_PARAMETERS_LEGACY => {
+                                "QUIC_TRANSPORT_PARAMETERS_LEGACY"
+                            }
+                            ExtensionType::QUIC_TRANSPORT_PARAMETERS_STANDARD => {
+                                "QUIC_TRANSPORT_PARAMETERS_STANDARD"
+                            }
+                            ExtensionType::CERT_COMPRESSION => "CERT_COMPRESSION",
+                            ExtensionType::SESSION_TICKET => "SESSION_TICKET",
+                            ExtensionType::SUPPORTED_GROUPS => "SUPPORTED_GROUPS",
+                            ExtensionType::PRE_SHARED_KEY => "PRE_SHARED_KEY",
+                            ExtensionType::EARLY_DATA => "EARLY_DATA",
+                            ExtensionType::SUPPORTED_VERSIONS => "SUPPORTED_VERSIONS",
+                            ExtensionType::COOKIE => "COOKIE",
+                            ExtensionType::PSK_KEY_EXCHANGE_MODES => "PSK_KEY_EXCHANGE_MODES",
+                            ExtensionType::CERTIFICATE_AUTHORITIES => "CERTIFICATE_AUTHORITIES",
+                            ExtensionType::SIGNATURE_ALGORITHMS_CERT => "SIGNATURE_ALGORITHMS_CERT",
+                            ExtensionType::KEY_SHARE => "KEY_SHARE",
+                            ExtensionType::RENEGOTIATE => "RENEGOTIATE",
+                            ExtensionType::DELEGATED_CREDENTIAL => "DELEGATED_CREDENTIAL",
+                            ExtensionType::APPLICATION_SETTINGS => "APPLICATION_SETTINGS",
+                            ExtensionType::APPLICATION_SETTINGS_NEW => "APPLICATION_SETTINGS_NEW",
+                            ExtensionType::ENCRYPTED_CLIENT_HELLO => "ENCRYPTED_CLIENT_HELLO",
+                            ExtensionType::CERTIFICATE_TIMESTAMP => "CERTIFICATE_TIMESTAMP",
+                            ExtensionType::NEXT_PROTO_NEG => "NEXT_PROTO_NEG",
+                            ExtensionType::CHANNEL_ID => "CHANNEL_ID",
+                            ExtensionType::RECORD_SIZE_LIMIT => "RECORD_SIZE_LIMIT",
+                            _ => unreachable!(),
+                        }
+                        .to_string()
+                    })
+                    .collect::<Vec<_>>();
+
+                tls_options.serialize_field("extension_permutation", &perm_vec)?;
+            }
+            None => tls_options.serialize_field("extension_permutation", &None::<Vec<String>>)?,
+        };
+
+        tls_options.serialize_field("aes_hw_override", &self.aes_hw_override)?;
+        tls_options.serialize_field("prefer_chacha20", &self.prefer_chacha20)?;
+        tls_options.serialize_field("random_aes_hw_override", &self.random_aes_hw_override)?;
+        tls_options.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for TlsOptions {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+        struct TlsOptionsVisitor;
+
+        impl<'de> Visitor<'de> for TlsOptionsVisitor {
+            type Value = TlsOptions;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("struct TlsOptions")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<TlsOptions, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut alpn_protocols = None;
+                let mut alps_protocols = None;
+                let mut alps_use_new_codepoint = false;
+                let mut session_ticket = true;
+                let mut min_tls_version = None;
+                let mut max_tls_version = None;
+                let mut pre_shared_key = false;
+                let mut enable_ech_grease = false;
+                let mut permute_extensions = None;
+                let mut grease_enabled = None;
+                let mut enable_ocsp_stapling = false;
+                let mut enable_signed_cert_timestamps = false;
+                let mut record_size_limit = None;
+                let mut psk_skip_session_ticket = false;
+                let mut key_shares_limit = None;
+                let mut psk_dhe_ke = true;
+                let mut renegotiation = true;
+                let mut delegated_credentials = None;
+                let mut curves_list = None;
+                let mut cipher_list = None;
+                let mut sigalgs_list = None;
+                let mut certificate_compression_algorithms = None;
+                let mut extension_permutation = None;
+                let mut aes_hw_override = None;
+                let mut prefer_chacha20 = None;
+                let mut random_aes_hw_override = false;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "alpn_protocols" => alpn_protocols = map.next_value()?,
+                        "alps_protocols" => alps_protocols = map.next_value()?,
+                        "alps_use_new_codepoint" => alps_use_new_codepoint = map.next_value()?,
+                        "session_ticket" => session_ticket = map.next_value()?,
+                        "min_tls_version" => min_tls_version = map.next_value()?,
+                        "max_tls_version" => max_tls_version = map.next_value()?,
+                        "pre_shared_key" => pre_shared_key = map.next_value()?,
+                        "enable_ech_grease" => enable_ech_grease = map.next_value()?,
+                        "permute_extensions" => permute_extensions = map.next_value()?,
+                        "grease_enabled" => grease_enabled = map.next_value()?,
+                        "enable_ocsp_stapling" => enable_ocsp_stapling = map.next_value()?,
+                        "enable_signed_cert_timestamps" => {
+                            enable_signed_cert_timestamps = map.next_value()?
+                        }
+                        "record_size_limit" => record_size_limit = map.next_value()?,
+                        "psk_skip_session_ticket" => psk_skip_session_ticket = map.next_value()?,
+                        "key_shares_limit" => key_shares_limit = map.next_value()?,
+                        "psk_dhe_ke" => psk_dhe_ke = map.next_value()?,
+                        "renegotiation" => renegotiation = map.next_value()?,
+                        "delegated_credentials" => delegated_credentials = map.next_value()?,
+                        "curves_list" => curves_list = map.next_value()?,
+                        "cipher_list" => cipher_list = map.next_value()?,
+                        "sigalgs_list" => sigalgs_list = map.next_value()?,
+                        "certificate_compression_algorithms" => {
+                            let algs: Vec<&str> = map.next_value()?;
+                            certificate_compression_algorithms = if algs.is_empty() {
+                                None
+                            } else {
+                                let mut parsed_algs = vec![];
+                                for s in algs {
+                                    match s {
+                                        "zlib" => parsed_algs
+                                            .push(CertificateCompressionAlgorithm::ZLIB.to_owned()),
+                                        "brotli" => parsed_algs.push(
+                                            CertificateCompressionAlgorithm::BROTLI.to_owned(),
+                                        ),
+                                        "zstd" => parsed_algs
+                                            .push(CertificateCompressionAlgorithm::ZSTD.to_owned()),
+                                        _ => {
+                                            return Err(de::Error::unknown_variant(
+                                                s,
+                                                &["zlib", "brotli", "zstd"],
+                                            ));
+                                        }
+                                    }
+                                }
+                                Some(parsed_algs)
+                            }
+                        }
+                        "extension_permutation" => {
+                            let exts: Vec<&str> = map.next_value()?;
+                            extension_permutation = if exts.is_empty() {
+                                None
+                            } else {
+                                let mut parsed_exts = vec![];
+                                for s in exts {
+                                    parsed_exts.push(match s {
+                                        "SERVER_NAME" => ExtensionType::SERVER_NAME,
+                                        "STATUS_REQUEST" => ExtensionType::STATUS_REQUEST,
+                                        "EC_POINT_FORMATS" => ExtensionType::EC_POINT_FORMATS,
+                                        "SIGNATURE_ALGORITHMS" => {
+                                            ExtensionType::SIGNATURE_ALGORITHMS
+                                        }
+                                        "SRTP" => ExtensionType::SRTP,
+                                        "APPLICATION_LAYER_PROTOCOL_NEGOTIATION" => {
+                                            ExtensionType::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
+                                        }
+                                        "PADDING" => ExtensionType::PADDING,
+                                        "EXTENDED_MASTER_SECRET" => {
+                                            ExtensionType::EXTENDED_MASTER_SECRET
+                                        }
+                                        "QUIC_TRANSPORT_PARAMETERS_LEGACY" => {
+                                            ExtensionType::QUIC_TRANSPORT_PARAMETERS_LEGACY
+                                        }
+                                        "QUIC_TRANSPORT_PARAMETERS_STANDARD" => {
+                                            ExtensionType::QUIC_TRANSPORT_PARAMETERS_STANDARD
+                                        }
+                                        "CERT_COMPRESSION" => ExtensionType::CERT_COMPRESSION,
+                                        "SESSION_TICKET" => ExtensionType::SESSION_TICKET,
+                                        "SUPPORTED_GROUPS" => ExtensionType::SUPPORTED_GROUPS,
+                                        "PRE_SHARED_KEY" => ExtensionType::PRE_SHARED_KEY,
+                                        "EARLY_DATA" => ExtensionType::EARLY_DATA,
+                                        "SUPPORTED_VERSIONS" => ExtensionType::SUPPORTED_VERSIONS,
+                                        "COOKIE" => ExtensionType::COOKIE,
+                                        "PSK_KEY_EXCHANGE_MODES" => {
+                                            ExtensionType::PSK_KEY_EXCHANGE_MODES
+                                        }
+                                        "CERTIFICATE_AUTHORITIES" => {
+                                            ExtensionType::CERTIFICATE_AUTHORITIES
+                                        }
+                                        "SIGNATURE_ALGORITHMS_CERT" => {
+                                            ExtensionType::SIGNATURE_ALGORITHMS_CERT
+                                        }
+                                        "KEY_SHARE" => ExtensionType::KEY_SHARE,
+                                        "RENEGOTIATE" => ExtensionType::RENEGOTIATE,
+                                        "DELEGATED_CREDENTIAL" => {
+                                            ExtensionType::DELEGATED_CREDENTIAL
+                                        }
+                                        "APPLICATION_SETTINGS" => {
+                                            ExtensionType::APPLICATION_SETTINGS
+                                        }
+                                        "APPLICATION_SETTINGS_NEW" => {
+                                            ExtensionType::APPLICATION_SETTINGS_NEW
+                                        }
+                                        "ENCRYPTED_CLIENT_HELLO" => {
+                                            ExtensionType::ENCRYPTED_CLIENT_HELLO
+                                        }
+                                        "CERTIFICATE_TIMESTAMP" => {
+                                            ExtensionType::CERTIFICATE_TIMESTAMP
+                                        }
+                                        "NEXT_PROTO_NEG" => ExtensionType::NEXT_PROTO_NEG,
+                                        "CHANNEL_ID" => ExtensionType::CHANNEL_ID,
+                                        "RECORD_SIZE_LIMIT" => ExtensionType::RECORD_SIZE_LIMIT,
+                                        _ => Err(de::Error::unknown_variant(
+                                            s,
+                                            &[
+                                                "SERVER_NAME",
+                                                "STATUS_REQUEST",
+                                                "EC_POINT_FORMATS",
+                                                "SIGNATURE_ALGORITHMS",
+                                                "SRTP",
+                                                "APPLICATION_LAYER_PROTOCOL_NEGOTIATION",
+                                                "PADDING",
+                                                "EXTENDED_MASTER_SECRET",
+                                                "QUIC_TRANSPORT_PARAMETERS_LEGACY",
+                                                "QUIC_TRANSPORT_PARAMETERS_STANDARD",
+                                                "CERT_COMPRESSION",
+                                                "SESSION_TICKET",
+                                                "SUPPORTED_GROUPS",
+                                                "PRE_SHARED_KEY",
+                                                "EARLY_DATA",
+                                                "SUPPORTED_VERSIONS",
+                                                "COOKIE",
+                                                "PSK_KEY_EXCHANGE_MODES",
+                                                "CERTIFICATE_AUTHORITIES",
+                                                "SIGNATURE_ALGORITHMS_CERT",
+                                                "KEY_SHARE",
+                                                "RENEGOTIATE",
+                                                "DELEGATED_CREDENTIAL",
+                                                "APPLICATION_SETTINGS",
+                                                "APPLICATION_SETTINGS_NEW",
+                                                "ENCRYPTED_CLIENT_HELLO",
+                                                "CERTIFICATE_TIMESTAMP",
+                                                "NEXT_PROTO_NEG",
+                                                "CHANNEL_ID",
+                                                "RECORD_SIZE_LIMIT",
+                                            ],
+                                        ))?,
+                                    });
+                                }
+                                Some(parsed_exts.into())
+                            }
+                        }
+                        "aes_hw_override" => aes_hw_override = map.next_value()?,
+                        "prefer_chacha20" => prefer_chacha20 = map.next_value()?,
+                        "random_aes_hw_override" => random_aes_hw_override = map.next_value()?,
+                        _ => {
+                            let _: de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+
+                Ok(TlsOptions {
+                    alpn_protocols,
+                    alps_protocols,
+                    alps_use_new_codepoint,
+                    session_ticket,
+                    min_tls_version,
+                    max_tls_version,
+                    pre_shared_key,
+                    enable_ech_grease,
+                    permute_extensions,
+                    grease_enabled,
+                    enable_ocsp_stapling,
+                    enable_signed_cert_timestamps,
+                    record_size_limit,
+                    psk_skip_session_ticket,
+                    key_shares_limit,
+                    psk_dhe_ke,
+                    renegotiation,
+                    delegated_credentials,
+                    curves_list,
+                    cipher_list,
+                    sigalgs_list,
+                    certificate_compression_algorithms: certificate_compression_algorithms
+                        .map(|alg_vec| std::borrow::Cow::Owned(alg_vec)),
+                    extension_permutation,
+                    aes_hw_override,
+                    prefer_chacha20,
+                    random_aes_hw_override,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "TlsOptions",
+            &[
+                "alpn_protocols",
+                "alps_protocols",
+                "alps_use_new_codepoint",
+                "session_ticket",
+                "min_tls_version",
+                "max_tls_version",
+                "pre_shared_key",
+                "enable_ech_grease",
+                "permute_extensions",
+                "grease_enabled",
+                "enable_ocsp_stapling",
+                "enable_signed_cert_timestamps",
+                "record_size_limit",
+                "psk_skip_session_ticket",
+                "key_shares_limit",
+                "psk_dhe_ke",
+                "renegotiation",
+                "delegated_credentials",
+                "curves_list",
+                "cipher_list",
+                "sigalgs_list",
+                "certificate_compression_algorithms",
+                "extension_permutation",
+                "aes_hw_override",
+                "prefer_chacha20",
+                "random_aes_hw_override",
+            ],
+            TlsOptionsVisitor,
+        )
+    }
 }
 
 impl TlsOptionsBuilder {
