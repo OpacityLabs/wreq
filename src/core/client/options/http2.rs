@@ -6,6 +6,7 @@ pub use http2::frame::{
     ExperimentalSettings, Priorities, PrioritiesBuilder, Priority, PseudoId, PseudoOrder, Setting,
     SettingId, SettingsOrder, SettingsOrderBuilder, StreamDependency, StreamId,
 };
+use serde::{Deserialize, Serialize};
 
 use super::super::proto;
 
@@ -36,7 +37,7 @@ pub struct Http2OptionsBuilder {
 ///
 /// This struct defines various parameters to fine-tune the behavior of an HTTP/2 connection,
 /// including stream management, window sizes, frame limits, and header config.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Http2Options {
     /// Whether to use adaptive flow control.

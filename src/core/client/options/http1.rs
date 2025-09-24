@@ -1,5 +1,7 @@
 //! HTTP/1 connection configuration.
 
+use serde::{Deserialize, Serialize};
+
 /// Builder for `Http1Options`.
 #[must_use]
 #[derive(Debug)]
@@ -11,7 +13,7 @@ pub struct Http1OptionsBuilder {
 ///
 /// These options allow you to customize the behavior of HTTP/1 connections,
 /// such as enabling support for HTTP/0.9 responses, header case preservation, etc.
-#[derive(Debug, Default, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Http1Options {
     /// Enable support for HTTP/0.9 responses.

@@ -10,6 +10,7 @@ mod options;
 mod x509;
 
 pub use boring2::ssl::{CertificateCompressionAlgorithm, ExtensionType};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub use self::{
     keylog::KeyLog,
@@ -38,6 +39,37 @@ use bytes::{BufMut, Bytes, BytesMut};
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct TlsVersion(ssl::SslVersion);
 
+impl Serialize for TlsVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match *self {
+            TlsVersion::TLS_1_0 => "TLS_1_0",
+            TlsVersion::TLS_1_1 => "TLS_1_1",
+            TlsVersion::TLS_1_2 => "TLS_1_2",
+            TlsVersion::TLS_1_3 => "TLS_1_3",
+            _ => return Err(serde::ser::Error::custom("invalid TLS version")),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for TlsVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "TLS_1_0" => TlsVersion::TLS_1_0,
+            "TLS_1_1" => TlsVersion::TLS_1_1,
+            "TLS_1_2" => TlsVersion::TLS_1_2,
+            "TLS_1_3" => TlsVersion::TLS_1_3,
+            _ => return Err(serde::de::Error::custom("invalid TLS version")),
+        })
+    }
+}
+
 impl TlsVersion {
     /// Version 1.0 of the TLS protocol.
     pub const TLS_1_0: TlsVersion = TlsVersion(ssl::SslVersion::TLS1);
@@ -55,6 +87,35 @@ impl TlsVersion {
 /// A TLS ALPN protocol.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct AlpnProtocol(&'static [u8]);
+
+impl Serialize for AlpnProtocol {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match *self {
+            AlpnProtocol::HTTP1 => "http/1.1",
+            AlpnProtocol::HTTP2 => "h2",
+            AlpnProtocol::HTTP3 => "h3",
+            _ => return Err(serde::ser::Error::custom("invalid TLS version")),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for AlpnProtocol {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "http/1.1" => AlpnProtocol::HTTP1,
+            "h2" => AlpnProtocol::HTTP2,
+            "h3" => AlpnProtocol::HTTP3,
+            _ => return Err(serde::de::Error::custom("invalid TLS version")),
+        })
+    }
+}
 
 impl AlpnProtocol {
     /// Prefer HTTP/1.1
@@ -87,6 +148,35 @@ impl AlpnProtocol {
             buf.extend_from_slice(item.0);
         }
         buf.freeze()
+    }
+}
+
+impl Serialize for AlpsProtocol {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(match *self {
+            AlpsProtocol::HTTP1 => "http/1.1",
+            AlpsProtocol::HTTP2 => "h2",
+            AlpsProtocol::HTTP3 => "h3",
+            _ => return Err(serde::ser::Error::custom("invalid TLS version")),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for AlpsProtocol {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "http/1.1" => AlpsProtocol::HTTP1,
+            "h2" => AlpsProtocol::HTTP2,
+            "h3" => AlpsProtocol::HTTP3,
+            _ => return Err(serde::de::Error::custom("invalid TLS version")),
+        })
     }
 }
 

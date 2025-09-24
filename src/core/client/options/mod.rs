@@ -4,6 +4,7 @@ pub mod http2;
 use http::Version;
 use http1::Http1Options;
 use http2::Http2Options;
+use serde::{Deserialize, Serialize};
 
 use super::connect::TcpConnectOptions;
 use crate::{proxy::Matcher, tls::TlsOptions};
@@ -12,7 +13,7 @@ use crate::{proxy::Matcher, tls::TlsOptions};
 ///
 /// This struct allows you to customize protocol-specific and TLS settings
 /// for network connections made by the client.
-#[derive(Debug, Default, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub(crate) struct TransportOptions {
     tls_options: Option<TlsOptions>,
