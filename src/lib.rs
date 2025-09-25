@@ -297,6 +297,7 @@ pub use self::{
         Body, Client, ClientBuilder, Emulation, EmulationBuilder, EmulationFactory, Request,
         RequestBuilder, Response, Upgraded, http1, http2,
     },
+    client::{TcpClient, TcpClientBuilder, TcpConnection, TcpConnector, TcpTlsStream},
     error::{Error, Result},
     ext::{Extension, ResponseBuilderExt, ResponseExt},
     into_uri::IntoUri,

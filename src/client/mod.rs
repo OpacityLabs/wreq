@@ -2,6 +2,7 @@ mod emulation;
 mod http;
 mod request;
 mod response;
+mod tcp;
 
 pub mod body;
 pub mod layer;
@@ -17,7 +18,11 @@ pub use self::{
     request::{Request, RequestBuilder},
     response::Response,
 };
+
+// Re-export TCP client components
 pub use crate::core::client::{
     options::{http1, http2},
     upgrade::Upgraded,
 };
+#[allow(unused_imports)]
+pub use tcp::{TcpClient, TcpClientBuilder, TcpConnection, TcpConnector, TcpTlsStream};
