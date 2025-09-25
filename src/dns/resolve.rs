@@ -118,7 +118,7 @@ where
 /// This allows custom DNS resolvers implementing `Resolve` to be used in contexts
 /// that expect a `Service<Name>` implementation.
 #[derive(Clone)]
-pub(crate) struct DynResolver {
+pub struct DynResolver {
     resolver: Arc<dyn Resolve>,
 }
 
