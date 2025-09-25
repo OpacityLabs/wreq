@@ -654,6 +654,9 @@ where
 
 impl<IO> EstablishedConn<IO> {
     #[inline]
+    /**
+     * Creates a new `EstablishedConn` with the given request and inner.
+     */
     pub fn new(req: ConnectRequest, inner: IO) -> Self {
         Self { req, inner }
     }
