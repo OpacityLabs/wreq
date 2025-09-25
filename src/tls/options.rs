@@ -285,7 +285,10 @@ impl Serialize for TlsOptions {
         };
 
         tls_options.serialize_field("aes_hw_override", &self.aes_hw_override)?;
-        tls_options.serialize_field("prefer_chacha20", &self.prefer_chacha20)?;
+        tls_options.serialize_field(
+            "preserve_tls13_cipher_list",
+            &self.preserve_tls13_cipher_list,
+        )?;
         tls_options.serialize_field("random_aes_hw_override", &self.random_aes_hw_override)?;
         tls_options.end()
     }
@@ -335,7 +338,7 @@ impl<'de> Deserialize<'de> for TlsOptions {
                 let mut certificate_compression_algorithms = None;
                 let mut extension_permutation = None;
                 let mut aes_hw_override = None;
-                let mut prefer_chacha20 = None;
+                let mut preserve_tls13_cipher_list = None;
                 let mut random_aes_hw_override = false;
 
                 while let Some(key) = map.next_key::<String>()? {
@@ -494,7 +497,9 @@ impl<'de> Deserialize<'de> for TlsOptions {
                             }
                         }
                         "aes_hw_override" => aes_hw_override = map.next_value()?,
-                        "prefer_chacha20" => prefer_chacha20 = map.next_value()?,
+                        "preserve_tls13_cipher_list" => {
+                            preserve_tls13_cipher_list = map.next_value()?
+                        }
                         "random_aes_hw_override" => random_aes_hw_override = map.next_value()?,
                         _ => {
                             let _: de::IgnoredAny = map.next_value()?;
@@ -528,7 +533,7 @@ impl<'de> Deserialize<'de> for TlsOptions {
                         .map(|alg_vec| std::borrow::Cow::Owned(alg_vec)),
                     extension_permutation,
                     aes_hw_override,
-                    prefer_chacha20,
+                    preserve_tls13_cipher_list,
                     random_aes_hw_override,
                 })
             }
