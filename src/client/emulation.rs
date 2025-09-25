@@ -159,10 +159,8 @@ impl<'de> Deserialize<'de> for Emulation {
                                         &header[1..],
                                     )),
                                     1 => OrigHeaderName::Standard(
-                                        http::HeaderName::from_bytes(
-                                            &header[1..],
-                                        )
-                                        .map_err(serde::de::Error::custom)?,
+                                        http::HeaderName::from_bytes(&header[1..])
+                                            .map_err(serde::de::Error::custom)?,
                                     ),
                                     _ => return Err(serde::de::Error::custom("invalid header")),
                                 };
