@@ -18,6 +18,7 @@ use connect::{
 pub use future::Pending;
 use http::header::{HeaderMap, HeaderValue, USER_AGENT};
 use service::{ConfigService, ConfigServiceLayer};
+use tokio::net::TcpStream;
 use tower::{
     Layer, Service, ServiceBuilder, ServiceExt,
     retry::{Retry, RetryLayer},
@@ -175,6 +176,7 @@ pub struct Client {
 #[must_use]
 pub struct ClientBuilder {
     config: Config,
+    socket: Option<TcpStream>,
 }
 
 /// The HTTP version preference for the client.
@@ -268,6 +270,7 @@ impl Client {
     #[inline]
     pub fn builder() -> ClientBuilder {
         ClientBuilder {
+            socket: None,
             config: Config {
                 error: None,
                 headers: HeaderMap::new(),
@@ -555,7 +558,10 @@ impl ClientBuilder {
             };
 
             // Build connector
-            let connector = Connector::builder(proxies.clone(), resolver)
+            let connector = match self.socket {
+                Some(socket) => Connector::builder_with_socket(proxies.clone(), resolver, socket),
+                None => Connector::builder(proxies.clone(), resolver)   
+            }
                 .timeout(config.connect_timeout)
                 .tls_info(config.tls_info)
                 .tls_options(tls_options)
@@ -1639,5 +1645,11 @@ impl ClientBuilder {
             .transport_options
             .apply_transport_options(transport_opts);
         self.default_headers(headers).orig_headers(orig_headers)
+    }
+
+    #[allow(missing_docs)]
+    pub fn socket(mut self, socket: TcpStream) -> ClientBuilder {
+        self.socket = Some(socket);
+        self
     }
 }

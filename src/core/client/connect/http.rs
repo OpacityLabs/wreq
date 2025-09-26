@@ -38,6 +38,7 @@ use crate::{
 pub struct HttpConnector<R = GaiResolver> {
     config: Arc<Config>,
     resolver: R,
+    socket: Arc<Option<TcpStream>>,
 }
 
 /// Extra information about the transport when an HttpConnector is used.
@@ -331,6 +332,11 @@ impl HttpConnector {
     pub fn new() -> HttpConnector {
         HttpConnector::new_with_resolver(GaiResolver::new())
     }
+
+    #[allow(unused)]
+    pub fn new_with_socket(socket: TcpStream) -> HttpConnector {
+        HttpConnector::new_with_resolver_and_socket(GaiResolver::new(), socket)
+    }
 }
 
 impl<R> HttpConnector<R> {
@@ -354,6 +360,28 @@ impl<R> HttpConnector<R> {
                 tcp_user_timeout: None,
             }),
             resolver,
+            socket: Arc::new(None),
+        }
+    }
+
+    #[allow(unused)]
+    pub fn new_with_resolver_and_socket(resolver: R, socket: TcpStream) -> HttpConnector<R> {
+        HttpConnector {
+            config: Arc::new(Config {
+                connect_timeout: None,
+                enforce_http: true,
+                happy_eyeballs_timeout: Some(Duration::from_millis(300)),
+                tcp_keepalive_config: TcpKeepaliveConfig::default(),
+                tcp_connect_options: TcpConnectOptions::default(),
+                nodelay: false,
+                reuse_address: false,
+                send_buffer_size: None,
+                recv_buffer_size: None,
+                #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+                tcp_user_timeout: None,
+            }),
+            resolver,
+            socket: Arc::new(Some(socket)),
         }
     }
 
@@ -582,9 +610,19 @@ where
     R: InternalResolve,
 {
     async fn call_async(&mut self, dst: Uri) -> Result<TcpStream, ConnectError> {
-        let config = &self.config;
+        let config = self.config.clone();
+        
+        // Check if we have a pre-existing socket
+        if let Some(socket) = Arc::get_mut(&mut self.socket).and_then(|opt| opt.take()) {
+            // We have a socket, use it directly
+            if let Err(_e) = socket.set_nodelay(config.nodelay) {
+                warn!("tcp set_nodelay error: {_e}");
+            }
+            return Ok(socket);
+        }
 
-        let (host, port) = get_host_port(config, &dst)?;
+        // No pre-existing socket, create a new connection
+        let (host, port) = get_host_port(&config, &dst)?;
         let host = host.trim_start_matches('[').trim_end_matches(']');
 
         // If the host is already an IP addr (v4 or v6),
@@ -604,8 +642,7 @@ where
             dns::SocketAddrs::new(addrs)
         };
 
-        let c = ConnectingTcp::new(addrs, config);
-
+        let c = ConnectingTcp::new(addrs, &config);
         let sock = c.connect().await?;
 
         if let Err(_e) = sock.set_nodelay(config.nodelay) {
