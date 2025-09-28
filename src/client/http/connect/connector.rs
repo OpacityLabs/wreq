@@ -222,6 +222,28 @@ impl Connector {
             tls_builder: TlsConnector::builder(),
         }
     }
+
+    #[allow(unused)]
+    pub(crate) fn builder_with_socket(
+        proxies: Arc<Vec<ProxyMatcher>>,
+        resolver: DynResolver,
+        socket: i32,
+    ) -> ConnectorBuilder {
+        ConnectorBuilder {
+            config: Config {
+                proxies,
+                verbose: Verbose::OFF,
+                tcp_nodelay: false,
+                tls_info: false,
+                timeout: None,
+            },
+            #[cfg(feature = "socks")]
+            resolver: resolver.clone(),
+            http: HttpConnector::new_with_resolver_and_socket(resolver, socket),
+            tls_options: TlsOptions::default(),
+            tls_builder: TlsConnector::builder(),
+        }
+    }
 }
 
 impl Service<ConnectRequest> for Connector {
