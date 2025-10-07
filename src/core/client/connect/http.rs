@@ -613,24 +613,45 @@ where
     async fn call_async(&mut self, dst: Uri) -> Result<TcpStream, ConnectError> {
         let config = self.config.clone();
 
-        let new_socket = match self.socket.as_ref() {
+        let new_socket: Option<socket2::Socket> = match self.socket.as_ref() {
             Some(socket) =>
             {
                 #[allow(unsafe_code)]
-                Some(
-                    TcpStream::from_std(unsafe { std::net::TcpStream::from_raw_fd(*socket) })
-                        .unwrap(),
-                )
+                Some(unsafe { socket2::Socket::from_raw_fd(*socket) })
             }
             None => None,
         };
 
         if let Some(socket) = new_socket {
             // We have a socket, use it directly
-            if let Err(_e) = socket.set_nodelay(config.nodelay) {
+            socket
+                .set_nonblocking(true)
+                .map_err(ConnectError::m("tcp set_nonblocking error"))?;
+
+            if let Err(_e) = socket.set_tcp_nodelay(config.nodelay) {
                 warn!("tcp set_nodelay error: {_e}");
             }
-            return Ok(socket);
+
+            if let Some(tcp_keepalive) = &config.tcp_keepalive_config.into_tcpkeepalive() {
+                if let Err(_e) = socket.set_tcp_keepalive(tcp_keepalive) {
+                    warn!("tcp set_keepalive error: {_e}");
+                }
+            }
+
+            // TODO: maybe also make use of config.tcp_connect_options.interface ?
+            // ..
+
+            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+            if let Some(tcp_user_timeout) = &config.tcp_user_timeout {
+                if let Err(_e) = socket.set_tcp_user_timeout(Some(*tcp_user_timeout)) {
+                    warn!("tcp set_tcp_user_timeout error: {_e}");
+                }
+            }
+
+            // TODO: yeah we can't set resuseaddr, send_buffer_size and recv_buffer_size
+            // after connecting. do something about it if the target server analyzes TCP options.
+            return Ok(TcpStream::from_std(socket.into())
+                .map_err(ConnectError::m("tcp from_std error"))?);
         }
 
         // No pre-existing socket, create a new connection
@@ -654,8 +675,8 @@ where
             dns::SocketAddrs::new(addrs)
         };
 
-        let c = ConnectingTcp::new(addrs, &config);
-        let sock = c.connect().await?;
+        let c: ConnectingTcp<'_> = ConnectingTcp::new(addrs, &config);
+        let sock: TcpStream = c.connect().await?;
 
         if let Err(_e) = sock.set_nodelay(config.nodelay) {
             warn!("tcp set_nodelay error: {_e}");
