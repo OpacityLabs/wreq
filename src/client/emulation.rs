@@ -54,11 +54,11 @@ impl Serialize for Emulation {
         let mut s = serializer.serialize_struct("Emulation", 3)?;
 
         let mut headers_map = Vec::with_capacity(self.headers.len());
-        let mut last_header_name = http::HeaderName::from_static("");
+        let mut last_header_name = None;
         for (header_name, header_value) in self.headers.clone().into_iter() {
             let header_name = match header_name {
                 Some(k) => {
-                    last_header_name = k.clone();
+                    last_header_name = Some(k.clone());
                     k
                 }
                 None => {
@@ -66,7 +66,11 @@ impl Serialize for Emulation {
                     //       we get no HeaderName if the header name has multiple values associated
                     //       i.e. Set-Cookie (but when having it sent from the SERVER to the CLIENT - sent to us)
                     //       I don't think we'll ever send a header name with multiple values associated
-                    last_header_name.to_owned()
+                    match last_header_name {
+                        Some(ref name) => name.clone(),
+                        // This should be some, since we have a header name with multiple values associated
+                        None => return Err(serde::ser::Error::custom("invalid header")),
+                    }
                 }
             };
 
