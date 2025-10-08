@@ -559,15 +559,15 @@ impl ClientBuilder {
             // Build connector
             let connector = match self.socket {
                 Some(socket) => Connector::builder_with_socket(proxies.clone(), resolver, socket),
-                None => Connector::builder(proxies.clone(), resolver)   
+                None => Connector::builder(proxies.clone(), resolver),
             }
-                .timeout(config.connect_timeout)
-                .tls_info(config.tls_info)
-                .tls_options(tls_options)
-                .verbose(config.connection_verbose)
-                .with_tls(tls)
-                .with_http(http)
-                .build(config.connector_layers)?;
+            .timeout(config.connect_timeout)
+            .tls_info(config.tls_info)
+            .tls_options(tls_options)
+            .verbose(config.connection_verbose)
+            .with_tls(tls)
+            .with_http(http)
+            .build(config.connector_layers)?;
 
             // Build client
             HttpClient::builder(TokioExecutor::new())
