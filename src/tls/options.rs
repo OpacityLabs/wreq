@@ -345,32 +345,50 @@ impl<'de> Deserialize<'de> for TlsOptions {
                     match key.as_str() {
                         "alpn_protocols" => alpn_protocols = map.next_value()?,
                         "alps_protocols" => alps_protocols = map.next_value()?,
-                        "alps_use_new_codepoint" => alps_use_new_codepoint = map.next_value()?,
-                        "session_ticket" => session_ticket = map.next_value()?,
+                        "alps_use_new_codepoint" => {
+                            alps_use_new_codepoint =
+                                map.next_value::<Option<bool>>()?.unwrap_or(false);
+                        }
+                        "session_ticket" => {
+                            session_ticket = map.next_value::<Option<bool>>()?.unwrap_or(true)
+                        }
                         "min_tls_version" => min_tls_version = map.next_value()?,
                         "max_tls_version" => max_tls_version = map.next_value()?,
-                        "pre_shared_key" => pre_shared_key = map.next_value()?,
-                        "enable_ech_grease" => enable_ech_grease = map.next_value()?,
+                        "pre_shared_key" => {
+                            pre_shared_key = map.next_value::<Option<bool>>()?.unwrap_or(false)
+                        }
+                        "enable_ech_grease" => {
+                            enable_ech_grease = map.next_value::<Option<bool>>()?.unwrap_or(false)
+                        }
                         "permute_extensions" => permute_extensions = map.next_value()?,
                         "grease_enabled" => grease_enabled = map.next_value()?,
-                        "enable_ocsp_stapling" => enable_ocsp_stapling = map.next_value()?,
+                        "enable_ocsp_stapling" => {
+                            enable_ocsp_stapling =
+                                map.next_value::<Option<bool>>()?.unwrap_or(false)
+                        }
                         "enable_signed_cert_timestamps" => {
-                            enable_signed_cert_timestamps = map.next_value()?
+                            enable_signed_cert_timestamps =
+                                map.next_value::<Option<bool>>()?.unwrap_or(false)
                         }
                         "record_size_limit" => record_size_limit = map.next_value()?,
-                        "psk_skip_session_ticket" => psk_skip_session_ticket = map.next_value()?,
+                        "psk_skip_session_ticket" => {
+                            psk_skip_session_ticket =
+                                map.next_value::<Option<bool>>()?.unwrap_or(false)
+                        }
                         "key_shares_limit" => key_shares_limit = map.next_value()?,
-                        "psk_dhe_ke" => psk_dhe_ke = map.next_value()?,
-                        "renegotiation" => renegotiation = map.next_value()?,
+                        "psk_dhe_ke" => {
+                            psk_dhe_ke = map.next_value::<Option<bool>>()?.unwrap_or(true)
+                        }
+                        "renegotiation" => {
+                            renegotiation = map.next_value::<Option<bool>>()?.unwrap_or(true)
+                        }
                         "delegated_credentials" => delegated_credentials = map.next_value()?,
                         "curves_list" => curves_list = map.next_value()?,
                         "cipher_list" => cipher_list = map.next_value()?,
                         "sigalgs_list" => sigalgs_list = map.next_value()?,
                         "certificate_compression_algorithms" => {
-                            let algs: Vec<&str> = map.next_value()?;
-                            certificate_compression_algorithms = if algs.is_empty() {
-                                None
-                            } else {
+                            let algs: Option<Vec<&str>> = map.next_value()?;
+                            if let Some(algs) = algs {
                                 let mut parsed_algs = vec![];
                                 for s in algs {
                                     match s {
@@ -389,14 +407,12 @@ impl<'de> Deserialize<'de> for TlsOptions {
                                         }
                                     }
                                 }
-                                Some(parsed_algs)
+                                certificate_compression_algorithms = Some(parsed_algs.into());
                             }
                         }
                         "extension_permutation" => {
-                            let exts: Vec<&str> = map.next_value()?;
-                            extension_permutation = if exts.is_empty() {
-                                None
-                            } else {
+                            let exts: Option<Vec<&str>> = map.next_value()?;
+                            if let Some(exts) = exts {
                                 let mut parsed_exts = vec![];
                                 for s in exts {
                                     parsed_exts.push(match s {
@@ -493,14 +509,17 @@ impl<'de> Deserialize<'de> for TlsOptions {
                                         ))?,
                                     });
                                 }
-                                Some(parsed_exts.into())
+                                extension_permutation = Some(parsed_exts.into());
                             }
                         }
                         "aes_hw_override" => aes_hw_override = map.next_value()?,
                         "preserve_tls13_cipher_list" => {
                             preserve_tls13_cipher_list = map.next_value()?
                         }
-                        "random_aes_hw_override" => random_aes_hw_override = map.next_value()?,
+                        "random_aes_hw_override" => {
+                            random_aes_hw_override =
+                                map.next_value::<Option<bool>>()?.unwrap_or(false)
+                        }
                         _ => {
                             let _: de::IgnoredAny = map.next_value()?;
                         }
