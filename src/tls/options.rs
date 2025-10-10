@@ -285,8 +285,10 @@ impl Serialize for TlsOptions {
         };
 
         tls_options.serialize_field("aes_hw_override", &self.aes_hw_override)?;
+        // TODO: rename this field to preserve_tls13_cipher_list
+        // we keep it like this for backwards compatibility
         tls_options.serialize_field(
-            "preserve_tls13_cipher_list",
+            "prefer_chacha20",
             &self.preserve_tls13_cipher_list,
         )?;
         tls_options.serialize_field("random_aes_hw_override", &self.random_aes_hw_override)?;
@@ -513,9 +515,9 @@ impl<'de> Deserialize<'de> for TlsOptions {
                             }
                         }
                         "aes_hw_override" => aes_hw_override = map.next_value()?,
-                        "preserve_tls13_cipher_list" => {
-                            preserve_tls13_cipher_list = map.next_value()?
-                        }
+                        // TODO: rename this field to preserve_tls13_cipher_list
+                        // we keep it like this for backwards compatibility
+                        "prefer_chacha20" => preserve_tls13_cipher_list = map.next_value()?,
                         "random_aes_hw_override" => {
                             random_aes_hw_override =
                                 map.next_value::<Option<bool>>()?.unwrap_or(false)
@@ -585,6 +587,8 @@ impl<'de> Deserialize<'de> for TlsOptions {
                 "certificate_compression_algorithms",
                 "extension_permutation",
                 "aes_hw_override",
+                // TODO: rename this field to preserve_tls13_cipher_list
+                // we keep it like this for backwards compatibility
                 "prefer_chacha20",
                 "random_aes_hw_override",
             ],
