@@ -653,6 +653,7 @@ where
 // ===== impl EstablishedConn =====
 
 impl<IO> EstablishedConn<IO> {
+    /// Creates a new [`EstablishedConn`].
     #[inline]
     /**
      * Creates a new `EstablishedConn` with the given request and inner.
