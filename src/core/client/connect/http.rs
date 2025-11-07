@@ -1,3 +1,7 @@
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
+#[cfg(windows)]
+use std::os::windows::io::FromRawSocket;
 use std::{
     error::Error as StdError,
     fmt,
@@ -5,7 +9,6 @@ use std::{
     io,
     marker::PhantomData,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    os::fd::FromRawFd,
     pin::Pin,
     sync::Arc,
     task::{self, Poll},
@@ -614,10 +617,19 @@ where
         let config = self.config.clone();
 
         let new_socket: Option<socket2::Socket> = match self.socket.as_ref() {
-            Some(socket) =>
-            {
+            Some(socket) => {
+                #[cfg(unix)]
                 #[allow(unsafe_code)]
-                Some(unsafe { socket2::Socket::from_raw_fd(*socket) })
+                {
+                    Some(unsafe { socket2::Socket::from_raw_fd(*socket) })
+                }
+                #[cfg(windows)]
+                #[allow(unsafe_code)]
+                {
+                    Some(unsafe {
+                        socket2::Socket::from_raw_socket((*socket as usize).try_into().unwrap())
+                    })
+                }
             }
             None => None,
         };
