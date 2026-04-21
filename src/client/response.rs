@@ -1,67 +1,81 @@
-use std::{fmt, net::SocketAddr};
+use std::{
+    net::SocketAddr,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use bytes::Bytes;
 #[cfg(feature = "charset")]
 use encoding_rs::{Encoding, UTF_8};
+#[cfg(feature = "stream")]
+use futures_util::Stream;
 use http::{HeaderMap, StatusCode, Uri, Version};
+use http_body::{Body as HttpBody, Frame};
+use http_body_util::{BodyExt, Collected};
 #[cfg(feature = "charset")]
 use mime::Mime;
 #[cfg(feature = "json")]
 use serde::de::DeserializeOwned;
 
-use super::body::{Body, ResponseBody};
+use super::{
+    conn::HttpInfo,
+    core::{ext::ReasonPhrase, upgrade},
+};
 #[cfg(feature = "cookies")]
 use crate::cookie;
-use crate::{
-    Error, Extension, Upgraded,
-    core::{client::connect::HttpInfo, ext::ReasonPhrase},
-    ext::RequestUri,
-};
+use crate::{Body, Error, Upgraded, error::BoxError, ext::RequestUri};
 
-/// A Response to a submitted `Request`.
+/// A Response to a submitted [`crate::Request`].
+#[derive(Debug)]
 pub struct Response {
-    res: http::Response<Body>,
     uri: Uri,
+    res: http::Response<Body>,
 }
 
 impl Response {
-    pub(super) fn new(res: http::Response<ResponseBody>, uri: Uri) -> Response {
-        let (parts, body) = res.into_parts();
-        let res = http::Response::from_parts(parts, Body::wrap(body));
-        Response { res, uri }
+    pub(super) fn new<B>(res: http::Response<B>, uri: Uri) -> Response
+    where
+        B: HttpBody + Send + Sync + 'static,
+        B::Data: Into<Bytes>,
+        B::Error: Into<BoxError>,
+    {
+        Response {
+            uri,
+            res: res.map(Body::wrap),
+        }
     }
 
-    /// Get the final `Uri` of this `Response`.
+    /// Get the final [`Uri`] of this [`Response`].
     #[inline]
     pub fn uri(&self) -> &Uri {
         &self.uri
     }
 
-    /// Get the `StatusCode` of this `Response`.
+    /// Get the [`StatusCode`] of this [`Response`].
     #[inline]
     pub fn status(&self) -> StatusCode {
         self.res.status()
     }
 
-    /// Get the HTTP `Version` of this `Response`.
+    /// Get the HTTP [`Version`] of this [`Response`].
     #[inline]
     pub fn version(&self) -> Version {
         self.res.version()
     }
 
-    /// Get the `Headers` of this `Response`.
+    /// Get the [`HeaderMap`] of this [`Response`].
     #[inline]
     pub fn headers(&self) -> &HeaderMap {
         self.res.headers()
     }
 
-    /// Get a mutable reference to the `Headers` of this `Response`.
+    /// Get a mutable reference to the [`HeaderMap`] of this [`Response`].
     #[inline]
     pub fn headers_mut(&mut self) -> &mut HeaderMap {
         self.res.headers_mut()
     }
 
-    /// Get the content length of the response, if it is known.
+    /// Get the content length of the [`Response`], if it is known.
     ///
     /// This value does not directly represents the value of the `Content-Length`
     /// header, but rather the size of the response's body. To read the header's
@@ -74,17 +88,16 @@ impl Response {
     ///   length).
     #[inline]
     pub fn content_length(&self) -> Option<u64> {
-        http_body::Body::size_hint(self.res.body()).exact()
+        HttpBody::size_hint(self.res.body()).exact()
     }
 
-    /// Retrieve the cookies contained in the response.
+    /// Retrieve the cookies contained in the [`Response`].
     ///
     /// Note that invalid 'Set-Cookie' headers will be ignored.
     ///
     /// # Optional
     ///
     /// This requires the optional `cookies` feature to be enabled.
-    #[inline]
     #[cfg(feature = "cookies")]
     pub fn cookies(&self) -> impl Iterator<Item = cookie::Cookie<'_>> {
         self.res
@@ -95,8 +108,7 @@ impl Response {
             .filter_map(Result::ok)
     }
 
-    /// Get the local address used to get this `Response`.
-    #[inline]
+    /// Get the local address used to get this [`Response`].
     pub fn local_addr(&self) -> Option<SocketAddr> {
         self.res
             .extensions()
@@ -104,8 +116,7 @@ impl Response {
             .map(HttpInfo::local_addr)
     }
 
-    /// Get the remote address used to get this `Response`.
-    #[inline]
+    /// Get the remote address used to get this [`Response`].
     pub fn remote_addr(&self) -> Option<SocketAddr> {
         self.res
             .extensions()
@@ -144,7 +155,6 @@ impl Response {
     /// # Ok(())
     /// # }
     /// ```
-    #[inline]
     pub async fn text(self) -> crate::Result<String> {
         #[cfg(feature = "charset")]
         {
@@ -209,7 +219,6 @@ impl Response {
         let encoding = Encoding::for_label(encoding_name.as_bytes()).unwrap_or(UTF_8);
 
         let full = self.bytes().await?;
-
         let (text, _, _) = encoding.decode(&full);
         Ok(text.into_owned())
     }
@@ -261,11 +270,10 @@ impl Response {
     #[cfg_attr(docsrs, doc(cfg(feature = "json")))]
     pub async fn json<T: DeserializeOwned>(self) -> crate::Result<T> {
         let full = self.bytes().await?;
-
         serde_json::from_slice(&full).map_err(Error::decode)
     }
 
-    /// Get the full response body as `Bytes`.
+    /// Get the full response body as [`Bytes`].
     ///
     /// # Example
     ///
@@ -283,11 +291,9 @@ impl Response {
     /// # }
     /// ```
     pub async fn bytes(self) -> crate::Result<Bytes> {
-        use http_body_util::BodyExt;
-
         BodyExt::collect(self.res.into_body())
             .await
-            .map(|buf| buf.to_bytes())
+            .map(Collected::<Bytes>::to_bytes)
     }
 
     /// Stream a chunk of the response body.
@@ -307,23 +313,18 @@ impl Response {
     /// # }
     /// ```
     pub async fn chunk(&mut self) -> crate::Result<Option<Bytes>> {
-        use http_body_util::BodyExt;
-
-        // loop to ignore unrecognized frames
         loop {
             if let Some(res) = self.res.body_mut().frame().await {
-                let frame = res?;
-                if let Ok(buf) = frame.into_data() {
+                if let Ok(buf) = res?.into_data() {
                     return Ok(Some(buf));
                 }
-                // else continue
             } else {
                 return Ok(None);
             }
         }
     }
 
-    /// Convert the response into a `Stream` of `Bytes` from the body.
+    /// Convert the response into a [`Stream`] of [`Bytes`] from the body.
     ///
     /// # Example
     ///
@@ -349,19 +350,18 @@ impl Response {
     /// This requires the optional `stream` feature to be enabled.
     #[cfg(feature = "stream")]
     #[cfg_attr(docsrs, doc(cfg(feature = "stream")))]
-    pub fn bytes_stream(self) -> impl futures_util::Stream<Item = crate::Result<Bytes>> {
-        super::body::DataStream(self.res.into_body())
+    pub fn bytes_stream(self) -> impl Stream<Item = crate::Result<Bytes>> {
+        http_body_util::BodyDataStream::new(self.res.into_body())
     }
 
     // extension methods
 
-    /// Get a reference to the associated extension of type `T`.
+    /// Returns a reference to the associated extensions.
     ///
     /// # Example
     ///
     /// ```
-    /// # use wreq::{Client, Extension};
-    /// # use wreq::tls::TlsInfo;
+    /// # use wreq::{Client, tls::TlsInfo};
     /// # async fn run() -> wreq::Result<()> {
     /// // Build a client that records TLS information.
     /// let client = Client::builder()
@@ -372,7 +372,7 @@ impl Response {
     /// let resp = client.get("https://www.google.com").send().await?;
     ///
     /// // Take the TlsInfo extension to inspect it.
-    /// if let Some(Extension(tls_info)) = resp.extension::<TlsInfo>() {
+    /// if let Some(tls_info) = resp.extensions().get::<TlsInfo>() {
     ///     // Now you own the TlsInfo and can process it.
     ///     println!("Peer certificate: {:?}", tls_info.peer_certificate());
     /// }
@@ -381,20 +381,34 @@ impl Response {
     /// # }
     /// ```
     #[inline]
-    pub fn extension<T>(&self) -> Option<&Extension<T>>
-    where
-        T: Send + Sync + 'static,
-    {
-        self.res.extensions().get::<Extension<T>>()
-    }
-
-    /// Returns a reference to the associated extensions.
-    #[inline]
     pub fn extensions(&self) -> &http::Extensions {
         self.res.extensions()
     }
 
     /// Returns a mutable reference to the associated extensions.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use wreq::{Client, tls::TlsInfo};
+    /// # async fn run() -> wreq::Result<()> {
+    /// // Build a client that records TLS information.
+    /// let client = Client::builder()
+    ///     .tls_info(true)
+    ///     .build()?;
+    ///
+    /// // Make a request.
+    /// let mut resp = client.get("https://www.google.com").send().await?;
+    ///
+    /// // Take the TlsInfo extension to inspect it.
+    /// if let Some(tls_info) = resp.extensions_mut().remove::<TlsInfo>() {
+    ///     // Now you own the TlsInfo and can process it.
+    ///     println!("Peer certificate: {:?}", tls_info.peer_certificate());
+    /// }
+    ///
+    /// # Ok(())
+    /// # }
+    /// ```
     #[inline]
     pub fn extensions_mut(&mut self) -> &mut http::Extensions {
         self.res.extensions_mut()
@@ -423,11 +437,7 @@ impl Response {
     pub fn error_for_status(mut self) -> crate::Result<Self> {
         let status = self.status();
         if status.is_client_error() || status.is_server_error() {
-            let reason = self
-                .res
-                .extensions_mut()
-                .remove::<Extension<ReasonPhrase>>()
-                .map(|Extension(reason)| reason);
+            let reason = self.res.extensions_mut().remove::<ReasonPhrase>();
             Err(Error::status_code(self.uri, status, reason))
         } else {
             Ok(self)
@@ -455,109 +465,70 @@ impl Response {
     pub fn error_for_status_ref(&self) -> crate::Result<&Self> {
         let status = self.status();
         if status.is_client_error() || status.is_server_error() {
-            let reason = self
-                .res
-                .extensions()
-                .get::<Extension<ReasonPhrase>>()
-                .map(|Extension(reason)| reason)
-                .cloned();
+            let reason = self.res.extensions().get::<ReasonPhrase>().cloned();
             Err(Error::status_code(self.uri.clone(), status, reason))
         } else {
             Ok(self)
         }
     }
 
-    /// Consumes the response and returns a future for a possible HTTP upgrade.
+    /// Consumes the [`Response`] and returns a future for a possible HTTP upgrade.
     pub async fn upgrade(self) -> crate::Result<Upgraded> {
-        crate::core::client::upgrade::on(self.res)
-            .await
-            .map_err(Error::upgrade)
+        upgrade::on(self.res).await.map_err(Error::upgrade)
     }
 }
 
-impl fmt::Debug for Response {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Response")
-            .field("url", self.uri())
-            .field("status", &self.status())
-            .field("headers", self.headers())
-            .finish()
-    }
-}
-
-// I'm not sure this conversion is that useful... People should be encouraged
-// to use `http::Response`, not `wreq::Response`.
+/// I'm not sure this conversion is that useful... People should be encouraged
+/// to use [`http::Response`], not `wreq::Response`.
 impl<T: Into<Body>> From<http::Response<T>> for Response {
     fn from(r: http::Response<T>) -> Response {
-        let (mut parts, body) = r.into_parts();
-        let body: Body = body.into();
-        let uri = parts
-            .extensions
+        let mut res = r.map(Into::into);
+        let uri = res
+            .extensions_mut()
             .remove::<RequestUri>()
             .unwrap_or_else(|| RequestUri(Uri::from_static("http://no.url.provided.local")));
-        Response {
-            res: http::Response::from_parts(parts, body),
-            uri: uri.0,
-        }
+        Response { res, uri: uri.0 }
     }
 }
 
-/// A `Response` can be converted into a `http::Response`.
+/// A [`Response`] can be converted into a [`http::Response`].
 // It's supposed to be the inverse of the conversion above.
 impl From<Response> for http::Response<Body> {
     fn from(r: Response) -> http::Response<Body> {
-        let (parts, body) = r.res.into_parts();
-        let body = Body::wrap(body);
-        let mut response = http::Response::from_parts(parts, body);
-        response.extensions_mut().insert(RequestUri(r.uri));
-        response
+        let mut res = r.res.map(Body::wrap);
+        res.extensions_mut().insert(RequestUri(r.uri));
+        res
     }
 }
 
-/// A `Response` can be piped as the `Body` of another request.
+/// A [`Response`] can be piped as the [`Body`] of another request.
 impl From<Response> for Body {
     fn from(r: Response) -> Body {
         Body::wrap(r.res.into_body())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use http::{Uri, response::Builder};
+/// A [`Response`] implements [`HttpBody`] to allow streaming the body.
+impl HttpBody for Response {
+    type Data = Bytes;
 
-    use super::Response;
-    use crate::{ResponseBuilderExt, ext::ResponseExt};
+    type Error = Error;
 
-    #[test]
-    fn test_from_http_response() {
-        let url = Uri::try_from("http://example.com").unwrap();
-        let response = Builder::new()
-            .status(200)
-            .uri(url.clone())
-            .body("foo")
-            .unwrap();
-        let response = Response::from(response);
-
-        assert_eq!(response.status(), 200);
-        assert_eq!(*response.uri(), url);
+    #[inline]
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Pin::new(self.res.body_mut()).poll_frame(cx)
     }
 
-    #[test]
-    fn test_from_http_response_with_url() {
-        let uri = Uri::try_from("http://example.com").unwrap();
-        let response = Builder::new()
-            .status(200)
-            .uri(uri.clone())
-            .body("foo")
-            .unwrap();
-        let response = Response::from(response);
+    #[inline]
+    fn is_end_stream(&self) -> bool {
+        self.res.body().is_end_stream()
+    }
 
-        assert_eq!(response.status(), 200);
-        assert_eq!(*response.uri(), uri);
-
-        let http_response = http::Response::from(response);
-        let resp_url = http_response.uri();
-        assert_eq!(http_response.status(), 200);
-        assert_eq!(resp_url, Some(&uri));
+    #[inline]
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.res.body().size_hint()
     }
 }

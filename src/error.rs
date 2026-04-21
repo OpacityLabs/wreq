@@ -2,7 +2,7 @@ use std::{error::Error as StdError, fmt, io};
 
 use http::Uri;
 
-use crate::{StatusCode, core::ext::ReasonPhrase, util::Escape};
+use crate::{StatusCode, client::ext::ReasonPhrase, util::Escape};
 
 /// A `Result` alias where the `Err` case is `wreq::Error`.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -144,8 +144,6 @@ impl Error {
 
     /// Returns true if the error is related to a timeout.
     pub fn is_timeout(&self) -> bool {
-        use crate::core::Error;
-
         let mut source = self.source();
 
         while let Some(err) = source {
@@ -153,7 +151,7 @@ impl Error {
                 return true;
             }
 
-            if let Some(core_err) = err.downcast_ref::<Error>() {
+            if let Some(core_err) = err.downcast_ref::<crate::client::CoreError>() {
                 if core_err.is_timeout() {
                     return true;
                 }
@@ -178,13 +176,32 @@ impl Error {
 
     /// Returns true if the error is related to connect
     pub fn is_connect(&self) -> bool {
-        use crate::core::client::Error;
+        use crate::client::Error;
 
         let mut source = self.source();
 
         while let Some(err) = source {
             if let Some(err) = err.downcast_ref::<Error>() {
                 if err.is_connect() {
+                    return true;
+                }
+            }
+
+            source = err.source();
+        }
+
+        false
+    }
+
+    /// Returns true if the error is related to proxy connect
+    pub fn is_proxy_connect(&self) -> bool {
+        use crate::client::Error;
+
+        let mut source = self.source();
+
+        while let Some(err) = source {
+            if let Some(err) = err.downcast_ref::<Error>() {
+                if err.is_proxy_connect() {
                     return true;
                 }
             }
@@ -252,7 +269,7 @@ impl Error {
 #[inline]
 pub(crate) fn map_timeout_to_connector_error(error: BoxError) -> BoxError {
     if error.is::<tower::timeout::error::Elapsed>() {
-        Box::new(TimedOut) as BoxError
+        Box::new(TimedOut)
     } else {
         error
     }
@@ -264,7 +281,7 @@ pub(crate) fn map_timeout_to_connector_error(error: BoxError) -> BoxError {
 #[inline]
 pub(crate) fn map_timeout_to_request_error(error: BoxError) -> BoxError {
     if error.is::<tower::timeout::error::Elapsed>() {
-        Box::new(Error::request(TimedOut)) as BoxError
+        Box::new(Error::request(TimedOut))
     } else {
         error
     }
@@ -355,6 +372,14 @@ pub(crate) enum Kind {
 #[derive(Debug)]
 pub(crate) struct TimedOut;
 
+#[derive(Debug)]
+pub(crate) struct BadScheme;
+
+#[derive(Debug)]
+pub(crate) struct ProxyConnect(pub(crate) BoxError);
+
+// ==== impl TimedOut ====
+
 impl fmt::Display for TimedOut {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str("operation timed out")
@@ -363,8 +388,7 @@ impl fmt::Display for TimedOut {
 
 impl StdError for TimedOut {}
 
-#[derive(Debug)]
-pub(crate) struct BadScheme;
+// ==== impl BadScheme ====
 
 impl fmt::Display for BadScheme {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -373,6 +397,20 @@ impl fmt::Display for BadScheme {
 }
 
 impl StdError for BadScheme {}
+
+// ==== impl ProxyConnect ====
+
+impl fmt::Display for ProxyConnect {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "proxy connect error: {}", self.0)
+    }
+}
+
+impl StdError for ProxyConnect {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(&*self.0)
+    }
+}
 
 #[cfg(test)]
 mod tests {

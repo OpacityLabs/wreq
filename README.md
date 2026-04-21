@@ -1,10 +1,10 @@
 # wreq
 
 [![CI](https://github.com/0x676e67/wreq/actions/workflows/ci.yml/badge.svg)](https://github.com/0x676e67/wreq/actions/workflows/ci.yml)
-[![Crates.io License](https://img.shields.io/crates/l/wreq)](./LICENSE)
+[![Crates.io License](https://img.shields.io/crates/l/wreq)](https://github.com/0x676e67/wreq/blob/main/LICENSE)
 [![Crates.io MSRV](https://img.shields.io/crates/msrv/wreq?logo=rust)](https://crates.io/crates/wreq)
 [![crates.io](https://img.shields.io/crates/v/wreq.svg?logo=rust)](https://crates.io/crates/wreq)
-[![docs.rs](https://img.shields.io/docsrs/wreq?color=blue&logo=rust)](https://docs.rs/wreq)
+[![docs.rs](https://img.shields.io/docsrs/wreq?logo=rust)](https://docs.rs/wreq)
 
 > 🚀 Help me work seamlessly with open source sharing by [sponsoring me on GitHub](https://github.com/0x676e67/0x676e67/blob/main/SPONSOR.md)
 
@@ -13,15 +13,16 @@ An ergonomic and modular Rust HTTP client for advanced and low-level emulation, 
 ## Features
 
 - Plain bodies, JSON, urlencoded, multipart
+- HTTP Trailer
 - Cookie Store
 - Redirect Policy
 - Original Header
 - Rotating Proxies
-- Certificate Store
 - Tower Middleware
 - WebSocket Upgrade
 - HTTPS via BoringSSL
 - HTTP/2 over TLS Emulation
+- Certificate Store (CAs & mTLS)
 
 ## Example
 
@@ -30,8 +31,8 @@ The following example uses the [Tokio](https://tokio.rs) runtime with optional f
 ```toml
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-wreq = "6.0.0-rc.21"
-wreq-util = "3.0.0-rc.7"
+wreq = "6.0.0-rc.27"
+wreq-util = "3.0.0-rc.9"
 ```
 
 And then the code:
@@ -50,7 +51,6 @@ async fn main() -> wreq::Result<()> {
     // Use the API you're already familiar with
     let resp = client.get("https://tls.peet.ws/api/all").send().await?;
     println!("{}", resp.text().await?);
-
     Ok(())
 }
 ```
@@ -59,19 +59,24 @@ async fn main() -> wreq::Result<()> {
 
 - **HTTP/1 over TLS**
 
-In the Rust ecosystem, most HTTP clients rely on the [http](https://github.com/hyperium/http) library, which performs well but does not preserve header case. This causes some **WAFs** to reject HTTP/1 requests with lowercase headers (see [discussion](https://github.com/seanmonstar/reqwest/discussions/2227)). `wreq` addresses this by fully supporting HTTP/1 header case sensitivity.
+In the Rust ecosystem, most HTTP clients rely on the [http](https://github.com/hyperium/http) library, which performs well but does not preserve header case. This causes some **WAFs** to reject **HTTP/1** requests with lowercase headers (see [discussion](https://github.com/seanmonstar/reqwest/discussions/2227)). **wreq** addresses this by fully supporting **HTTP/1** header case sensitivity.
 
 - **HTTP/2 over TLS**
 
-Due to the complexity of TLS encryption and the widespread adoption of HTTP/2, browser fingerprints such as **JA3**, **JA4**, and **Akamai** cannot be reliably emulated using simple fingerprint strings. Instead of parsing and emulating these string-based fingerprints, `wreq` provides fine-grained control over TLS and HTTP/2 extensions and settings for precise browser behavior emulation.
+Due to the complexity of **TLS** encryption and the widespread adoption of **HTTP/2**, browser fingerprints such as **JA3**, **JA4**, and **Akamai** cannot be reliably emulated using simple fingerprint strings. Instead of parsing and emulating these string-based fingerprints, **wreq** provides fine-grained control over **TLS** and **HTTP/2** extensions and settings for precise browser behavior emulation.
 
 - **Device Emulation**
 
-Most browser device models share identical TLS and HTTP/2 configurations, differing only in the `User-Agent` string. Common browser device emulation templates are maintained in [`wreq-util`](https://github.com/0x676e67/wreq-util), a companion utility crate.
+Most browser device models share identical **TLS** and **HTTP/2** configurations, differing only in the **User-Agent** string. Common browser device emulation templates are maintained in [wreq-util](https://github.com/0x676e67/wreq-util), a companion utility crate.
 
 ## Building
 
-Avoid compiling with packages that depend on `openssl-sys`, as it shares the same prefix symbol with `boring-sys`, potentially leading to [link failures](https://github.com/cloudflare/boring/issues/197) and other issues. Even if compilation succeeds, using both `openssl-sys` and `boring-sys` together can result in memory segmentation faults. Until the upstream Boring resolves these linking conflicts, using `rustls` is the best workaround.
+Compiling with packages that depend on **openssl-sys** causes symbol conflicts with **boring-sys**, leading to [link failures](https://github.com/cloudflare/boring/issues/197). On **Linux/Android**, enable the `prefix-symbols` feature to prefix all BoringSSL symbols:
+
+```toml
+[dependencies]
+wreq = { version = "6.0.0-rc.27", features = ["prefix-symbols"] }
+```
 
 Install the dependencies required to build [BoringSSL](https://github.com/google/boringssl/blob/master/BUILDING.md#build-prerequisites)
 

@@ -134,9 +134,11 @@
 //! This can be an array of tuples, or a `HashMap`, or a custom type that
 //! implements [`Serialize`][serde].
 //!
+//! The feature `form` is required.
+//!
 //! ```rust
 //! # use wreq::Error;
-//! #
+//! # #[cfg(feature = "form")]
 //! # async fn run() -> Result<(), Error> {
 //! // This will POST a body of `foo=bar&baz=quux`
 //! let params = [("foo", "bar"), ("baz", "quux")];
@@ -243,6 +245,8 @@
 //! - **brotli**: Provides response body brotli decompression.
 //! - **zstd**: Provides response body zstd decompression.
 //! - **deflate**: Provides response body deflate decompression.
+//! - **query**: Provides query parameter serialization.
+//! - **form**: Provides form data serialization.
 //! - **json**: Provides serialization and deserialization for JSON bodies.
 //! - **multipart**: Provides functionality for multipart forms.
 //! - **charset**: Improved support for decoding text.
@@ -254,6 +258,7 @@
 //! - **webpki-roots** *(enabled by default)*: Use the webpki-roots crate for root certificates.
 //! - **system-proxy**: Enable system proxy support.
 //! - **tracing**: Enable tracing logging support.
+//! - **prefix-symbols**: Prefix BoringSSL symbols to avoid linker conflicts.
 //!
 //! [client]: ./struct.Client.html
 //! [response]: ./struct.Response.html
@@ -266,8 +271,9 @@
 
 #[macro_use]
 mod trace;
+#[macro_use]
+mod config;
 mod client;
-mod core;
 mod error;
 mod ext;
 mod hash;
@@ -298,7 +304,7 @@ pub use self::{
         RequestBuilder, Response, Upgraded, http1, http2,
     },
     error::{Error, Result},
-    ext::{Extension, ResponseBuilderExt, ResponseExt},
+    ext::{ResponseBuilderExt, ResponseExt},
     into_uri::IntoUri,
     proxy::{NoProxy, Proxy},
     tls::*,

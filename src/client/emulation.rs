@@ -5,11 +5,9 @@ use serde::{
     ser::SerializeStruct,
 };
 
+use super::{http1::Http1Options, http2::Http2Options, layer::config::TransportOptions};
 use crate::{
-    core::client::options::TransportOptions,
-    header::{OrigHeaderMap, OrigHeaderName},
-    http1::Http1Options,
-    http2::Http2Options,
+    header::{OrigHeaderMap, OrigHeaderName, name::Kind as HeaderNameKind},
     tls::TlsOptions,
 };
 
@@ -85,13 +83,13 @@ impl Serialize for Emulation {
         for (_, header_value) in self.orig_headers.clone().into_iter() {
             let mut header_val_vec: Vec<u8> = Vec::with_capacity(header_value.as_ref().len() + 1);
 
-            match header_value {
-                crate::header::OrigHeaderName::Cased(bytes) => {
+            match header_value.kind {
+                crate::header::name::Kind::Cased(bytes) => {
                     // first enum value, stored in the first byte
                     header_val_vec.push(0);
                     header_val_vec.extend_from_slice(bytes.as_ref());
                 }
-                crate::header::OrigHeaderName::Standard(header_name) => {
+                crate::header::name::Kind::Standard(header_name) => {
                     // second enum value, stored in the first byte
                     header_val_vec.push(1);
                     header_val_vec.extend_from_slice(header_name.as_str().as_bytes());
@@ -159,17 +157,21 @@ impl<'de> Deserialize<'de> for Emulation {
                                     .ok_or(serde::de::Error::custom("invalid header"))?;
 
                                 let orig_header_name = match *header_name_orig_ty {
-                                    0 => OrigHeaderName::Cased(bytes::Bytes::copy_from_slice(
-                                        &header[1..],
-                                    )),
-                                    1 => OrigHeaderName::Standard(
-                                        http::HeaderName::from_bytes(&header[1..])
-                                            .map_err(serde::de::Error::custom)?,
-                                    ),
+                                    0 => OrigHeaderName {
+                                        kind: HeaderNameKind::Cased(bytes::Bytes::copy_from_slice(
+                                            &header[1..],
+                                        )),
+                                    },
+                                    1 => OrigHeaderName {
+                                        kind: HeaderNameKind::Standard(
+                                            http::HeaderName::from_bytes(&header[1..])
+                                                .map_err(serde::de::Error::custom)?,
+                                        ),
+                                    },
                                     _ => return Err(serde::de::Error::custom("invalid header")),
                                 };
 
-                                orig_headers.insert(orig_header_name);
+                                orig_headers.insert(OrigHeaderName::from(orig_header_name));
                             }
                         }
                         "transport" => transport = map.next_value()?,

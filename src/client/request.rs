@@ -6,8 +6,16 @@ use std::{
     time::Duration,
 };
 
-use http::{Extensions, Request as HttpRequest, Uri, Version, request::Parts};
+use http::{Extensions, Request as HttpRequest, Uri, Version};
+#[cfg(any(feature = "query", feature = "form", feature = "json"))]
 use serde::Serialize;
+#[cfg(feature = "multipart")]
+use {super::multipart, bytes::Bytes, http::header::CONTENT_LENGTH};
+#[cfg(feature = "cookies")]
+use {
+    crate::cookie::{CookieStore, IntoCookieStore},
+    std::sync::Arc,
+};
 
 #[cfg(any(
     feature = "gzip",
@@ -15,47 +23,32 @@ use serde::Serialize;
     feature = "brotli",
     feature = "deflate",
 ))]
-use super::layer::config::RequestAcceptEncoding;
-#[cfg(feature = "multipart")]
-use super::multipart;
+use super::layer::decoder::AcceptEncoding;
 use super::{
     Body, EmulationFactory, Response,
-    http::{Client, Pending},
-    layer::config::{RequestDefaultHeaders, RequestRedirectPolicy, RequestTimeoutOptions},
+    http::{Client, future::Pending},
+    layer::{
+        config::{DefaultHeaders, RequestOptions},
+        timeout::TimeoutOptions,
+    },
 };
+#[cfg(any(feature = "multipart", feature = "form", feature = "json"))]
+use crate::header::CONTENT_TYPE;
 use crate::{
     Error, Method, Proxy,
-    core::{
-        client::options::RequestOptions,
-        ext::{RequestConfig, RequestConfigValue, RequestLayerOptions, RequestOrigHeaderMap},
-    },
+    config::{RequestConfig, RequestConfigValue},
     ext::UriExt,
-    header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, OrigHeaderMap},
+    header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, OrigHeaderMap},
     redirect,
 };
 
-/// A request which can be executed with `Client::execute()`.
+/// A request which can be executed with [`Client::execute()`].
 #[derive(Debug)]
-pub struct Request {
-    /// The request's method
-    method: Method,
+pub struct Request(http::Request<Option<Body>>);
 
-    /// The request's URI
-    uri: Uri,
-
-    /// The request's headers
-    headers: HeaderMap<HeaderValue>,
-
-    /// The request's extensions
-    extensions: Extensions,
-
-    /// The request's body
-    body: Option<Body>,
-}
-
-/// A builder to construct the properties of a `Request`.
+/// A builder to construct the properties of a [`Request`].
 ///
-/// To construct a `RequestBuilder`, refer to the `Client` documentation.
+/// To construct a [`RequestBuilder`], refer to the [`Client`] documentation.
 #[must_use = "RequestBuilder does nothing until you 'send' it"]
 pub struct RequestBuilder {
     client: Client,
@@ -63,77 +56,74 @@ pub struct RequestBuilder {
 }
 
 impl Request {
-    /// Constructs a new request.
-    #[inline]
+    /// Constructs a new [`Request`].
     pub fn new(method: Method, uri: Uri) -> Self {
-        Request {
-            method,
-            uri,
-            headers: HeaderMap::new(),
-            extensions: Extensions::new(),
-            body: None,
-        }
+        let mut request = http::Request::new(None);
+        *request.method_mut() = method;
+        *request.uri_mut() = uri;
+        Request(request)
     }
 
     /// Get the method.
     #[inline]
     pub fn method(&self) -> &Method {
-        &self.method
+        self.0.method()
     }
 
     /// Get a mutable reference to the method.
     #[inline]
     pub fn method_mut(&mut self) -> &mut Method {
-        &mut self.method
+        self.0.method_mut()
     }
 
     /// Get the uri.
     #[inline]
     pub fn uri(&self) -> &Uri {
-        &self.uri
+        self.0.uri()
     }
 
     /// Get a mutable reference to the uri.
     #[inline]
     pub fn uri_mut(&mut self) -> &mut Uri {
-        &mut self.uri
+        self.0.uri_mut()
     }
 
     /// Get the headers.
     #[inline]
     pub fn headers(&self) -> &HeaderMap {
-        &self.headers
+        self.0.headers()
     }
 
     /// Get a mutable reference to the headers.
     #[inline]
     pub fn headers_mut(&mut self) -> &mut HeaderMap {
-        &mut self.headers
+        self.0.headers_mut()
     }
 
     /// Get the body.
     #[inline]
     pub fn body(&self) -> Option<&Body> {
-        self.body.as_ref()
+        self.0.body().as_ref()
     }
 
     /// Get a mutable reference to the body.
     #[inline]
     pub fn body_mut(&mut self) -> &mut Option<Body> {
-        &mut self.body
+        self.0.body_mut()
     }
 
     /// Get the http version.
     #[inline]
     pub fn version(&self) -> Option<Version> {
-        self.config::<RequestLayerOptions>()
+        self.config::<RequestOptions>()
             .and_then(RequestOptions::enforced_version)
     }
 
     /// Get a mutable reference to the http version.
     #[inline]
     pub fn version_mut(&mut self) -> &mut Option<Version> {
-        self.config_mut::<RequestLayerOptions>()
+        self.config_mut::<RequestOptions>()
+            .get_or_insert_default()
             .enforced_version_mut()
     }
 
@@ -153,33 +143,30 @@ impl Request {
         Some(req)
     }
 
-    /// Get the extensions.
     #[inline]
     pub(crate) fn extensions(&self) -> &Extensions {
-        &self.extensions
+        self.0.extensions()
     }
 
-    /// Get a mutable reference to the extensions.
     #[inline]
     pub(crate) fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        self.0.extensions_mut()
     }
 
     #[inline]
-    fn config<T>(&self) -> Option<&T::Value>
+    pub(crate) fn config<T>(&self) -> Option<&T::Value>
     where
         T: RequestConfigValue,
     {
-        RequestConfig::<T>::get(&self.extensions)
+        RequestConfig::<T>::get(self.extensions())
     }
 
     #[inline]
-    fn config_mut<T>(&mut self) -> &mut T::Value
+    pub(crate) fn config_mut<T>(&mut self) -> &mut Option<T::Value>
     where
         T: RequestConfigValue,
-        T::Value: Default,
     {
-        RequestConfig::<T>::get_mut(&mut self.extensions).get_or_insert_default()
+        RequestConfig::<T>::get_mut(self.extensions_mut())
     }
 }
 
@@ -191,7 +178,7 @@ impl RequestBuilder {
             .request
             .as_mut()
             .ok()
-            .and_then(|req| extract_authority(&mut req.uri));
+            .and_then(|req| extract_authority(req.uri_mut()));
 
         if let Some((username, password)) = auth {
             builder.basic_auth(username, password)
@@ -208,45 +195,8 @@ impl RequestBuilder {
         }
     }
 
-    /// Add a `Header` to this Request.
-    ///
-    /// If the header is already present, the value will be replaced.
-    pub fn header<K, V>(self, key: K, value: V) -> RequestBuilder
-    where
-        HeaderName: TryFrom<K>,
-        <HeaderName as TryFrom<K>>::Error: Into<http::Error>,
-        HeaderValue: TryFrom<V>,
-        <HeaderValue as TryFrom<V>>::Error: Into<http::Error>,
-    {
-        self.header_operation(key, value, false, true, false)
-    }
-
-    /// Add a `Header` to append to the request.
-    ///
-    /// The new header is always appended to the request, even if the header already exists.
-    pub fn header_append<K, V>(self, key: K, value: V) -> RequestBuilder
-    where
-        HeaderName: TryFrom<K>,
-        <HeaderName as TryFrom<K>>::Error: Into<http::Error>,
-        HeaderValue: TryFrom<V>,
-        <HeaderValue as TryFrom<V>>::Error: Into<http::Error>,
-    {
-        self.header_operation(key, value, false, false, false)
-    }
-
-    /// Add a `Header` to this Request.
-    ///
-    /// `sensitive` - if true, the header value is set to sensitive
-    /// `overwrite` - if true, the header value is overwritten if it already exists
-    /// `or_insert` - if true, the header value is inserted if it does not already exist
-    fn header_operation<K, V>(
-        mut self,
-        key: K,
-        value: V,
-        sensitive: bool,
-        overwrite: bool,
-        or_insert: bool,
-    ) -> RequestBuilder
+    /// Add a `Header` to this Request with ability to define if `header_value` is sensitive.
+    fn header_sensitive<K, V>(mut self, key: K, value: V, sensitive: bool) -> RequestBuilder
     where
         HeaderName: TryFrom<K>,
         <HeaderName as TryFrom<K>>::Error: Into<http::Error>,
@@ -258,22 +208,13 @@ impl RequestBuilder {
             match <HeaderName as TryFrom<K>>::try_from(key) {
                 Ok(key) => match <HeaderValue as TryFrom<V>>::try_from(value) {
                     Ok(mut value) => {
-                        // We want to potentially make an unsensitive header
+                        // We want to potentially make an non-sensitive header
                         // to be sensitive, not the reverse. So, don't turn off
                         // a previously sensitive header.
                         if sensitive {
                             value.set_sensitive(true);
                         }
-
-                        // If or_insert is true, we want to skip the insertion if the header already
-                        // exists
-                        if or_insert {
-                            req.headers_mut().entry(key).or_insert(value);
-                        } else if overwrite {
-                            req.headers_mut().insert(key, value);
-                        } else {
-                            req.headers_mut().append(key, value);
-                        }
+                        req.headers_mut().append(key, value);
                     }
                     Err(e) => error = Some(Error::builder(e.into())),
                 },
@@ -284,6 +225,20 @@ impl RequestBuilder {
             self.request = Err(err);
         }
         self
+    }
+
+    /// Add a `Header` to this Request.
+    ///
+    /// If the header is already present, the value will be replaced.
+    #[inline]
+    pub fn header<K, V>(self, key: K, value: V) -> RequestBuilder
+    where
+        HeaderName: TryFrom<K>,
+        <HeaderName as TryFrom<K>>::Error: Into<http::Error>,
+        HeaderValue: TryFrom<V>,
+        <HeaderValue as TryFrom<V>>::Error: Into<http::Error>,
+    {
+        self.header_sensitive(key, value, false)
     }
 
     /// Add a set of Headers to the existing ones on this Request.
@@ -299,7 +254,7 @@ impl RequestBuilder {
     /// Set the original headers for this request.
     pub fn orig_headers(mut self, orig_headers: OrigHeaderMap) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
-            *req.config_mut::<RequestOrigHeaderMap>() = orig_headers;
+            req.config_mut::<OrigHeaderMap>().replace(orig_headers);
         }
         self
     }
@@ -309,19 +264,32 @@ impl RequestBuilder {
     /// By default, client default headers are included. Set to `false` to skip them.
     pub fn default_headers(mut self, enable: bool) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
-            *req.config_mut::<RequestDefaultHeaders>() = enable;
+            req.config_mut::<DefaultHeaders>().replace(enable);
         }
         self
     }
 
     /// Enable HTTP authentication.
-    #[inline]
-    pub fn auth<V>(self, value: V) -> RequestBuilder
+    ///
+    /// ```rust
+    /// # use wreq::Error;
+    /// #
+    /// # async fn run() -> Result<(), Error> {
+    /// let client = wreq::Client::new();
+    /// let resp = client
+    ///     .get("http://httpbin.org/get")
+    ///     .auth("your_token_here")
+    ///     .send()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn auth<V>(self, token: V) -> RequestBuilder
     where
         HeaderValue: TryFrom<V>,
         <HeaderValue as TryFrom<V>>::Error: Into<http::Error>,
     {
-        self.header_operation(crate::header::AUTHORIZATION, value, true, true, false)
+        self.header_sensitive(AUTHORIZATION, token, true)
     }
 
     /// Enable HTTP basic authentication.
@@ -345,28 +313,30 @@ impl RequestBuilder {
         P: fmt::Display,
     {
         let header_value = crate::util::basic_auth(username, password);
-        self.header_operation(
-            crate::header::AUTHORIZATION,
-            header_value,
-            true,
-            true,
-            false,
-        )
+        self.header_sensitive(AUTHORIZATION, header_value, true)
     }
 
     /// Enable HTTP bearer authentication.
+    ///
+    /// ```rust
+    /// # use wreq::Error;
+    /// #
+    /// # async fn run() -> Result<(), Error> {
+    /// let client = wreq::Client::new();
+    /// let resp = client
+    ///     .get("http://httpbin.org/get")
+    ///     .bearer_auth("your_token_here")
+    ///     .send()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn bearer_auth<T>(self, token: T) -> RequestBuilder
     where
         T: fmt::Display,
     {
         let header_value = format!("Bearer {token}");
-        self.header_operation(
-            crate::header::AUTHORIZATION,
-            header_value,
-            true,
-            true,
-            false,
-        )
+        self.header_sensitive(AUTHORIZATION, header_value, true)
     }
 
     /// Enables a request timeout.
@@ -376,7 +346,8 @@ impl RequestBuilder {
     /// the timeout configured using `ClientBuilder::timeout()`.
     pub fn timeout(mut self, timeout: Duration) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
-            req.config_mut::<RequestTimeoutOptions>()
+            req.config_mut::<TimeoutOptions>()
+                .get_or_insert_default()
                 .total_timeout(timeout);
         }
         self
@@ -389,7 +360,8 @@ impl RequestBuilder {
     /// overrides the read timeout configured using `ClientBuilder::read_timeout()`.
     pub fn read_timeout(mut self, timeout: Duration) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
-            req.config_mut::<RequestTimeoutOptions>()
+            req.config_mut::<TimeoutOptions>()
+                .get_or_insert_default()
                 .read_timeout(timeout);
         }
         self
@@ -420,24 +392,32 @@ impl RequestBuilder {
     /// ```
     #[cfg(feature = "multipart")]
     #[cfg_attr(docsrs, doc(cfg(feature = "multipart")))]
-    pub fn multipart(self, mut multipart: multipart::Form) -> RequestBuilder {
-        let mut builder = self.header_operation(
-            CONTENT_TYPE,
-            format!("multipart/form-data; boundary={}", multipart.boundary()),
-            false,
-            false,
-            true,
-        );
+    pub fn multipart(mut self, mut multipart: multipart::Form) -> RequestBuilder {
+        if let Ok(ref mut req) = self.request {
+            match HeaderValue::from_maybe_shared(Bytes::from(format!(
+                "multipart/form-data; boundary={}",
+                multipart.boundary()
+            ))) {
+                Ok(content_type) => {
+                    req.headers_mut()
+                        .entry(CONTENT_TYPE)
+                        .or_insert(content_type);
 
-        builder = match multipart.compute_length() {
-            Some(length) => builder.header(http::header::CONTENT_LENGTH, length),
-            None => builder,
-        };
+                    if let Some(length) = multipart.compute_length() {
+                        req.headers_mut()
+                            .entry(CONTENT_LENGTH)
+                            .or_insert(HeaderValue::from(length));
+                    }
 
-        if let Ok(ref mut req) = builder.request {
-            *req.body_mut() = Some(multipart.stream())
+                    *req.body_mut() = Some(multipart.stream())
+                }
+                Err(err) => {
+                    self.request = Err(Error::builder(err));
+                }
+            };
         }
-        builder
+
+        self
     }
 
     /// Modify the query string of the URI.
@@ -458,6 +438,8 @@ impl RequestBuilder {
     /// # Errors
     /// This method will fail if the object you provide cannot be serialized
     /// into a query string.
+    #[cfg(feature = "query")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "query")))]
     pub fn query<T: Serialize + ?Sized>(mut self, query: &T) -> RequestBuilder {
         let mut error = None;
         if let Ok(ref mut req) = self.request {
@@ -503,6 +485,8 @@ impl RequestBuilder {
     ///
     /// This method fails if the passed value cannot be serialized into
     /// uri encoded format
+    #[cfg(feature = "form")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "form")))]
     pub fn form<T: Serialize + ?Sized>(mut self, form: &T) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
             match serde_urlencoded::to_string(form) {
@@ -551,7 +535,7 @@ impl RequestBuilder {
     /// Set HTTP version
     pub fn version(mut self, version: Version) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
-            *req.version_mut() = Some(version);
+            req.version_mut().replace(version);
         }
         self
     }
@@ -559,7 +543,21 @@ impl RequestBuilder {
     /// Set the redirect policy for this request.
     pub fn redirect(mut self, policy: redirect::Policy) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
-            *req.config_mut::<RequestRedirectPolicy>() = policy;
+            req.config_mut::<redirect::Policy>().replace(policy);
+        }
+        self
+    }
+
+    /// Set the persistent cookie store for the request.
+    #[cfg(feature = "cookies")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "cookies")))]
+    pub fn cookie_provider<C>(mut self, cookie_store: C) -> RequestBuilder
+    where
+        C: IntoCookieStore,
+    {
+        if let Ok(ref mut req) = self.request {
+            req.config_mut::<Arc<dyn CookieStore>>()
+                .replace(cookie_store.into_cookie_store());
         }
         self
     }
@@ -569,7 +567,9 @@ impl RequestBuilder {
     #[cfg_attr(docsrs, doc(cfg(feature = "gzip")))]
     pub fn gzip(mut self, gzip: bool) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
-            req.config_mut::<RequestAcceptEncoding>().gzip(gzip);
+            req.config_mut::<AcceptEncoding>()
+                .get_or_insert_default()
+                .gzip = gzip;
         }
         self
     }
@@ -579,7 +579,9 @@ impl RequestBuilder {
     #[cfg_attr(docsrs, doc(cfg(feature = "brotli")))]
     pub fn brotli(mut self, brotli: bool) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
-            req.config_mut::<RequestAcceptEncoding>().brotli(brotli);
+            req.config_mut::<AcceptEncoding>()
+                .get_or_insert_default()
+                .brotli = brotli;
         }
         self
     }
@@ -589,7 +591,9 @@ impl RequestBuilder {
     #[cfg_attr(docsrs, doc(cfg(feature = "deflate")))]
     pub fn deflate(mut self, deflate: bool) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
-            req.config_mut::<RequestAcceptEncoding>().deflate(deflate);
+            req.config_mut::<AcceptEncoding>()
+                .get_or_insert_default()
+                .deflate = deflate;
         }
         self
     }
@@ -599,7 +603,9 @@ impl RequestBuilder {
     #[cfg_attr(docsrs, doc(cfg(feature = "zstd")))]
     pub fn zstd(mut self, zstd: bool) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
-            req.config_mut::<RequestAcceptEncoding>().zstd(zstd);
+            req.config_mut::<AcceptEncoding>()
+                .get_or_insert_default()
+                .zstd = zstd;
         }
         self
     }
@@ -607,8 +613,10 @@ impl RequestBuilder {
     /// Set the proxy for this request.
     pub fn proxy(mut self, proxy: Proxy) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
-            *req.config_mut::<RequestLayerOptions>().proxy_matcher_mut() =
-                Some(proxy.into_matcher());
+            req.config_mut::<RequestOptions>()
+                .get_or_insert_default()
+                .proxy_matcher_mut()
+                .replace(proxy.into_matcher());
         }
         self
     }
@@ -619,7 +627,8 @@ impl RequestBuilder {
         V: Into<Option<IpAddr>>,
     {
         if let Ok(ref mut req) = self.request {
-            req.config_mut::<RequestLayerOptions>()
+            req.config_mut::<RequestOptions>()
+                .get_or_insert_default()
                 .tcp_connect_opts_mut()
                 .set_local_address(local_address.into());
         }
@@ -633,7 +642,8 @@ impl RequestBuilder {
         V6: Into<Option<Ipv6Addr>>,
     {
         if let Ok(ref mut req) = self.request {
-            req.config_mut::<RequestLayerOptions>()
+            req.config_mut::<RequestOptions>()
+                .get_or_insert_default()
                 .tcp_connect_opts_mut()
                 .set_local_addresses(ipv4, ipv6);
         }
@@ -673,7 +683,8 @@ impl RequestBuilder {
         I: Into<std::borrow::Cow<'static, str>>,
     {
         if let Ok(ref mut req) = self.request {
-            req.config_mut::<RequestLayerOptions>()
+            req.config_mut::<RequestOptions>()
+                .get_or_insert_default()
                 .tcp_connect_opts_mut()
                 .set_interface(interface);
         }
@@ -688,11 +699,10 @@ impl RequestBuilder {
         if let Ok(ref mut req) = self.request {
             let emulation = factory.emulation();
             let (transport_opts, default_headers, orig_headers) = emulation.into_parts();
-
-            req.config_mut::<RequestLayerOptions>()
+            req.config_mut::<RequestOptions>()
+                .get_or_insert_default()
                 .transport_opts_mut()
                 .apply_transport_options(transport_opts);
-
             self = self.headers(default_headers).orig_headers(orig_headers);
         }
 
@@ -700,16 +710,16 @@ impl RequestBuilder {
     }
 
     /// Build a `Request`, which can be inspected, modified and executed with
-    /// `Client::execute()`.
+    /// [`Client::execute()`].
     pub fn build(self) -> crate::Result<Request> {
         self.request
     }
 
     /// Build a `Request`, which can be inspected, modified and executed with
-    /// `Client::execute()`.
+    /// [`Client::execute()`].
     ///
     /// This is similar to [`RequestBuilder::build()`], but also returns the
-    /// embedded `Client`.
+    /// embedded [`Client`].
     pub fn build_split(self) -> (Client, crate::Result<Request>) {
         (self.client, self.request)
     }
@@ -795,46 +805,16 @@ fn extract_authority(uri: &mut Uri) -> Option<(String, Option<String>)> {
     None
 }
 
-impl<T> From<HttpRequest<T>> for Request
-where
-    T: Into<Body>,
-{
+impl<T: Into<Body>> From<HttpRequest<T>> for Request {
+    #[inline]
     fn from(req: HttpRequest<T>) -> Request {
-        let (parts, body) = req.into_parts();
-        let Parts {
-            method,
-            uri,
-            headers,
-            ..
-        } = parts;
-        Request {
-            method,
-            uri,
-            headers,
-            body: Some(body.into()),
-            extensions: Extensions::new(),
-        }
+        Request(req.map(Into::into).map(Some))
     }
 }
 
 impl From<Request> for HttpRequest<Body> {
+    #[inline]
     fn from(req: Request) -> HttpRequest<Body> {
-        let Request {
-            method,
-            uri,
-            headers,
-            extensions,
-            body,
-            ..
-        } = req;
-
-        let mut req = HttpRequest::builder()
-            .method(method)
-            .uri(uri)
-            .body(body.unwrap_or_else(Body::empty))
-            .expect("valid request parts");
-        *req.headers_mut() = headers;
-        *req.extensions_mut() = extensions;
-        req
+        req.0.map(|body| body.unwrap_or_else(Body::empty))
     }
 }

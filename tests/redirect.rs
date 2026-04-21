@@ -1,8 +1,9 @@
 mod support;
+use http::StatusCode;
 use http_body_util::BodyExt;
 use support::server;
 use wreq::{
-    Body, Client, Extension,
+    Body, Client,
     redirect::{History, Policy},
 };
 
@@ -488,7 +489,6 @@ async fn test_redirect_history() {
 
     let client = Client::builder()
         .redirect(Policy::default())
-        .history(true)
         .build()
         .unwrap();
 
@@ -500,20 +500,19 @@ async fn test_redirect_history() {
         &"test-dst"
     );
 
-    let Extension(history) = res.extension::<Vec<History>>().unwrap();
-    let mut history = history.iter();
+    let mut history = res.extensions().get::<History>().unwrap().into_iter();
 
     let next1 = history.next().unwrap();
-    assert_eq!(next1.status(), 302);
-    assert_eq!(next1.previous().path(), "/first");
-    assert_eq!(next1.uri().path(), "/second");
-    assert_eq!(next1.headers()["location"], "/second");
+    assert_eq!(next1.status, 302);
+    assert_eq!(next1.previous.path(), "/first");
+    assert_eq!(next1.uri.path(), "/second");
+    assert_eq!(next1.headers["location"], "/second");
 
     let next2 = history.next().unwrap();
-    assert_eq!(next2.status(), 302);
-    assert_eq!(next2.previous().path(), "/second");
-    assert_eq!(next2.uri().path(), "/dst");
-    assert_eq!(next2.headers()["location"], "/dst");
+    assert_eq!(next2.status, 302);
+    assert_eq!(next2.previous.path(), "/second");
+    assert_eq!(next2.uri.path(), "/dst");
+    assert_eq!(next2.headers["location"], "/dst");
 
     assert!(history.next().is_none());
 }
@@ -555,4 +554,76 @@ async fn test_redirect_applies_set_cookie_from_redirect() {
     let res = client.get(&start).send().await.unwrap();
     assert_eq!(res.uri(), dst.as_str());
     assert_eq!(res.status(), wreq::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_redirect_async_pending_follow() {
+    let server = server::http(move |req| async move {
+        if req.uri() == "/async-redirect" {
+            http::Response::builder()
+                .status(302)
+                .header("location", "/dst")
+                .body(Body::default())
+                .unwrap()
+        } else {
+            assert_eq!(req.uri(), "/dst");
+            http::Response::builder()
+                .header("server", "test-dst")
+                .body(Body::default())
+                .unwrap()
+        }
+    });
+
+    let url = format!("http://{}/async-redirect", server.addr());
+    let dst = format!("http://{}/dst", server.addr());
+
+    let client = Client::builder()
+        .redirect(Policy::custom(|attempt| {
+            attempt.pending(|attempt| async move {
+                // Simulate async decision-making
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                attempt.follow()
+            })
+        }))
+        .build()
+        .unwrap();
+
+    let res = client.get(&url).send().await.unwrap();
+    assert_eq!(res.uri(), dst.as_str());
+    assert_eq!(res.status(), wreq::StatusCode::OK);
+    assert_eq!(
+        res.headers().get(wreq::header::SERVER).unwrap(),
+        &"test-dst"
+    );
+}
+
+#[tokio::test]
+async fn test_redirect_location_is_encoded() {
+    let server = server::http(move |req| async move {
+        if req.uri() == "/start" {
+            http::Response::builder()
+                .status(302)
+                .header("location", "/dst path")
+                .body(wreq::Body::default())
+                .unwrap()
+        } else {
+            assert_eq!(req.uri().path(), "/dst%20path");
+            http::Response::builder()
+                .status(StatusCode::OK)
+                .body(wreq::Body::default())
+                .unwrap()
+        }
+    });
+
+    let url = format!("http://{}/start", server.addr());
+    let dst = format!("http://{}/dst%20path", server.addr());
+
+    let client = Client::builder()
+        .redirect(Policy::default())
+        .build()
+        .unwrap();
+
+    let res = client.get(&url).send().await.unwrap();
+    assert_eq!(res.uri(), dst.as_str());
+    assert_eq!(res.status(), StatusCode::OK);
 }

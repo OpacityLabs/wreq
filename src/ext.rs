@@ -1,14 +1,29 @@
 //! Extension utilities.
 
 use bytes::Bytes;
-use http::uri::{Authority, PathAndQuery, Scheme, Uri};
+use http::uri::{Authority, Scheme, Uri};
 use percent_encoding::{AsciiSet, CONTROLS};
 
 use crate::Body;
 
-/// Extractor and response for extensions.
-#[derive(Clone, Copy)]
-pub struct Extension<T>(pub T);
+/// See: <https://url.spec.whatwg.org/#fragment-percent-encode-set>
+const FRAGMENT: &AsciiSet = &CONTROLS.add(b' ').add(b'"').add(b'<').add(b'>').add(b'`');
+
+/// See: <https://url.spec.whatwg.org/#path-percent-encode-set>
+const PATH: &AsciiSet = &FRAGMENT.add(b'#').add(b'?').add(b'{').add(b'}');
+
+/// See: <https://url.spec.whatwg.org/#userinfo-percent-encode-set>
+const USERINFO: &AsciiSet = &PATH
+    .add(b'/')
+    .add(b':')
+    .add(b';')
+    .add(b'=')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'|');
 
 /// Extension trait for http::Response objects
 ///
@@ -39,7 +54,11 @@ pub(crate) trait UriExt {
     /// Returns true if the URI scheme is HTTPS.
     fn is_https(&self) -> bool;
 
+    /// Returns the port of the URI, or the default port for the scheme if none is specified.
+    fn port_or_default(&self) -> u16;
+
     /// Sets the query component of the URI, replacing any existing query.
+    #[cfg(feature = "query")]
     fn set_query(&mut self, query: String);
 
     /// Returns the username and password from the URI's userinfo, if present.
@@ -48,28 +67,6 @@ pub(crate) trait UriExt {
     /// Sets the username and password in the URI's userinfo component.
     fn set_userinfo(&mut self, username: &str, password: Option<&str>);
 }
-
-/// https://url.spec.whatwg.org/#fragment-percent-encode-set
-pub(crate) const FRAGMENT: &AsciiSet = &CONTROLS.add(b' ').add(b'"').add(b'<').add(b'>').add(b'`');
-
-/// https://url.spec.whatwg.org/#path-percent-encode-set
-pub(crate) const PATH: &AsciiSet = &FRAGMENT.add(b'#').add(b'?').add(b'{').add(b'}');
-
-// https://url.spec.whatwg.org/#query-state
-pub(crate) const QUERY: &AsciiSet = &CONTROLS.add(b' ').add(b'"').add(b'#').add(b'<').add(b'>');
-
-/// https://url.spec.whatwg.org/#userinfo-percent-encode-set
-pub(crate) const USERINFO: &AsciiSet = &PATH
-    .add(b'/')
-    .add(b':')
-    .add(b';')
-    .add(b'=')
-    .add(b'@')
-    .add(b'[')
-    .add(b'\\')
-    .add(b']')
-    .add(b'^')
-    .add(b'|');
 
 // ===== impl ResponseExt =====
 
@@ -100,14 +97,34 @@ impl UriExt for Uri {
         self.scheme() == Some(&Scheme::HTTPS)
     }
 
+    fn port_or_default(&self) -> u16 {
+        match Uri::port(self) {
+            Some(p) => p.as_u16(),
+            None if self.is_https() => 443u16,
+            _ => 80u16,
+        }
+    }
+
+    #[cfg(feature = "query")]
     fn set_query(&mut self, query: String) {
+        use http::uri::PathAndQuery;
+
         if query.is_empty() {
             return;
         }
 
         let path = self.path();
-        let mut parts = self.clone().into_parts();
-        parts.path_and_query = PathAndQuery::try_from(format!("{path}?{query}")).ok();
+        let parts = match PathAndQuery::from_maybe_shared(Bytes::from(format!("{path}?{query}"))) {
+            Ok(path_and_query) => {
+                let mut parts = self.clone().into_parts();
+                parts.path_and_query.replace(path_and_query);
+                parts
+            }
+            Err(_err) => {
+                debug!("Failed to set query in URI: {_err}");
+                return;
+            }
+        };
 
         if let Ok(uri) = Uri::from_parts(parts) {
             *self = uri;
@@ -156,8 +173,10 @@ impl UriExt for Uri {
             }
         };
 
-        parts.authority = match Authority::from_maybe_shared(authority) {
-            Ok(authority) => Some(authority),
+        match Authority::from_maybe_shared(authority) {
+            Ok(authority) => {
+                parts.authority.replace(authority);
+            }
             Err(_err) => {
                 debug!("Failed to set userinfo in URI: {_err}");
                 return;
@@ -334,6 +353,7 @@ mod tests {
         assert_eq!(uri.to_string(), "http://:p%40ss%20word@example.com/");
     }
 
+    #[cfg(feature = "query")]
     #[test]
     fn test_set_query() {
         let mut uri: Uri = "http://example.com/path".parse().unwrap();
