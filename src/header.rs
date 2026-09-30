@@ -192,8 +192,7 @@ impl IntoIterator for OrigHeaderMap {
 
 impl_request_config_value!(OrigHeaderMap);
 
-/// Dummy doc
-pub mod name {
+mod name {
     use bytes::Bytes;
     use http::HeaderName;
 
@@ -207,13 +206,11 @@ pub mod name {
     /// debugging, or exact HTTP message reproduction.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct OrigHeaderName {
-        /// Dummy doc
-        pub kind: Kind,
+        pub(super) kind: Kind,
     }
 
-    /// Dummy doc
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum Kind {
+    pub(super) enum Kind {
         /// The original casing of the header name as received.
         Cased(Bytes),
         /// The canonical (normalized, lowercased) header name.

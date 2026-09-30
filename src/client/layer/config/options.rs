@@ -1,5 +1,4 @@
 use http::Version;
-use serde::{Deserialize, Serialize};
 
 use crate::{
     client::{
@@ -25,7 +24,7 @@ pub struct RequestOptions {
 ///
 /// This struct allows you to customize protocol-specific and TLS settings
 /// for network connections made by the client.
-#[derive(Debug, Default, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Hash, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TransportOptions {
     tls_options: Option<TlsOptions>,
