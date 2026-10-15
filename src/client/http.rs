@@ -174,7 +174,7 @@ pub struct Client {
 #[must_use]
 pub struct ClientBuilder {
     config: Config,
-    socket: Option<i32>,
+    preconnected_stream: Option<std::net::TcpStream>,
 }
 
 /// The HTTP version preference for the client.
@@ -266,7 +266,7 @@ impl Client {
     /// Creates a [`ClientBuilder`] to configure a [`Client`].
     pub fn builder() -> ClientBuilder {
         ClientBuilder {
-            socket: None,
+            preconnected_stream: None,
             config: Config {
                 error: None,
                 headers: HeaderMap::new(),
@@ -515,10 +515,7 @@ impl ClientBuilder {
             };
 
             // Build connector
-            let connector = match self.socket {
-                Some(socket) => Connector::builder_with_socket(config.proxies, resolver, socket),
-                None => Connector::builder(config.proxies, resolver)
-            }
+            let connector = Connector::builder(config.proxies, resolver)
                 .timeout(config.connect_timeout)
                 .tls_info(config.tls_info)
                 .tls_options(tls_options)
@@ -540,6 +537,9 @@ impl ClientBuilder {
                         .keylog(config.keylog)
                 })
                 .with_http(|http| {
+                    if let Some(stream) = self.preconnected_stream {
+                        http.set_preconnected_stream(stream);
+                    }
                     http.enforce_http(false);
                     http.set_keepalive(config.tcp_keepalive);
                     http.set_keepalive_interval(config.tcp_keepalive_interval);
@@ -1591,6 +1591,19 @@ impl ClientBuilder {
         self
     }
 
+    /// Sends the client's first connection over `stream`, an already connected TCP stream,
+    /// instead of dialing the request's host.
+    ///
+    /// The stream carries exactly one connection. Later requests reuse it while the pool holds
+    /// it. A request that needs a new connection fails with a connect error: for example a
+    /// redirect to another host, or an HTTP/1.1 request that starts before the previous response
+    /// has returned the connection to the pool. The client owns the stream and closes it when the
+    /// client and its connection drop.
+    pub fn tcp_stream(mut self, stream: std::net::TcpStream) -> ClientBuilder {
+        self.preconnected_stream = Some(stream);
+        self
+    }
+
     // TLS/HTTP2 emulation options
 
     /// Configures the client builder to emulation the specified HTTP context.
@@ -1630,11 +1643,5 @@ impl ClientBuilder {
             .transport_options
             .apply_transport_options(transport_opts);
         self.default_headers(headers).orig_headers(orig_headers)
-    }
-
-    #[allow(missing_docs)]
-    pub fn socket(mut self, socket: i32) -> ClientBuilder {
-        self.socket = Some(socket);
-        self
     }
 }

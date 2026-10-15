@@ -1,7 +1,3 @@
-#[cfg(unix)]
-use std::os::fd::FromRawFd;
-#[cfg(windows)]
-use std::os::windows::io::FromRawSocket;
 use std::{
     error::Error as StdError,
     fmt,
@@ -28,6 +24,7 @@ use super::{Connected, Connection};
 use crate::{
     dns::{self, GaiResolver, InternalResolve, resolve},
     error::BoxError,
+    sync::Mutex,
 };
 
 /// A connector for the `http` scheme.
@@ -42,7 +39,7 @@ use crate::{
 pub struct HttpConnector<R = GaiResolver> {
     config: Arc<Config>,
     resolver: R,
-    socket: Option<i32>,
+    preconnected: Option<Arc<Mutex<Option<std::net::TcpStream>>>>,
 }
 
 /// Extra information about the transport when an HttpConnector is used.
@@ -336,11 +333,6 @@ impl HttpConnector {
     pub fn new() -> HttpConnector {
         HttpConnector::new_with_resolver(GaiResolver::new())
     }
-
-    #[allow(unused)]
-    pub fn new_with_socket(socket: i32) -> HttpConnector {
-        HttpConnector::new_with_resolver_and_socket(GaiResolver::new(), socket)
-    }
 }
 
 impl<R> HttpConnector<R> {
@@ -361,29 +353,17 @@ impl<R> HttpConnector<R> {
                 tcp_user_timeout: None,
             }),
             resolver,
-            socket: None,
+            preconnected: None,
         }
     }
 
-    #[allow(unused)]
-    pub fn new_with_resolver_and_socket(resolver: R, socket: i32) -> HttpConnector<R> {
-        HttpConnector {
-            config: Arc::new(Config {
-                connect_timeout: None,
-                enforce_http: true,
-                happy_eyeballs_timeout: Some(Duration::from_millis(300)),
-                tcp_keepalive_config: TcpKeepaliveConfig::default(),
-                tcp_connect_options: TcpConnectOptions::default(),
-                nodelay: false,
-                reuse_address: false,
-                send_buffer_size: None,
-                recv_buffer_size: None,
-                #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-                tcp_user_timeout: None,
-            }),
-            resolver,
-            socket: Some(socket),
-        }
+    /// Uses `stream`, an already connected TCP stream, for the first connection instead of
+    /// dialing the destination.
+    ///
+    /// The stream carries one connection. Every later connect fails, whatever its destination.
+    #[inline]
+    pub fn set_preconnected_stream(&mut self, stream: std::net::TcpStream) {
+        self.preconnected = Some(Arc::new(Mutex::new(Some(stream))));
     }
 
     /// Option to enforce all `Uri`s have the `http` scheme.
@@ -528,6 +508,7 @@ impl<R> HttpConnector<R> {
 static INVALID_NOT_HTTP: &str = "invalid URI, scheme is not http";
 static INVALID_MISSING_SCHEME: &str = "invalid URI, scheme is missing";
 static INVALID_MISSING_HOST: &str = "invalid URI, host is missing";
+static PRECONNECTED_STREAM_USED: &str = "the preconnected stream is already used";
 
 // R: Debug required for now to allow adding it to debug output later...
 impl<R: fmt::Debug> fmt::Debug for HttpConnector<R> {
@@ -612,60 +593,18 @@ where
     R: InternalResolve,
 {
     async fn call_async(&mut self, dst: Uri) -> Result<TcpStream, ConnectError> {
-        let config = self.config.clone();
+        let config = &self.config;
 
-        let new_socket: Option<socket2::Socket> = match self.socket.as_ref() {
-            Some(socket) => {
-                #[cfg(unix)]
-                #[allow(unsafe_code)]
-                {
-                    Some(unsafe { socket2::Socket::from_raw_fd(*socket) })
-                }
-                #[cfg(windows)]
-                #[allow(unsafe_code)]
-                {
-                    Some(unsafe {
-                        socket2::Socket::from_raw_socket((*socket as usize).try_into().unwrap())
-                    })
-                }
-            }
-            None => None,
-        };
-
-        if let Some(socket) = new_socket {
-            // We have a socket, use it directly
-            socket
-                .set_nonblocking(true)
-                .map_err(ConnectError::m("tcp set_nonblocking error"))?;
-
-            if let Err(_e) = socket.set_tcp_nodelay(config.nodelay) {
-                warn!("tcp set_nodelay error: {_e}");
-            }
-
-            if let Some(tcp_keepalive) = &config.tcp_keepalive_config.into_tcpkeepalive() {
-                if let Err(_e) = socket.set_tcp_keepalive(tcp_keepalive) {
-                    warn!("tcp set_keepalive error: {_e}");
-                }
-            }
-
-            // TODO: maybe also make use of config.tcp_connect_options.interface ?
-            // ..
-
-            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            if let Some(tcp_user_timeout) = &config.tcp_user_timeout {
-                if let Err(_e) = socket.set_tcp_user_timeout(Some(*tcp_user_timeout)) {
-                    warn!("tcp set_tcp_user_timeout error: {_e}");
-                }
-            }
-
-            // TODO: yeah we can't set resuseaddr, send_buffer_size and recv_buffer_size
-            // after connecting. do something about it if the target server analyzes TCP options.
-            return Ok(TcpStream::from_std(socket.into())
-                .map_err(ConnectError::m("tcp from_std error"))?);
+        if let Some(preconnected) = &self.preconnected {
+            let stream = preconnected.lock().take().ok_or(ConnectError {
+                msg: PRECONNECTED_STREAM_USED,
+                addr: None,
+                cause: None,
+            })?;
+            return use_preconnected(stream, config);
         }
 
-        // No pre-existing socket, create a new connection
-        let (host, port) = get_host_port(&config, &dst)?;
+        let (host, port) = get_host_port(config, &dst)?;
         let host = host.trim_start_matches('[').trim_end_matches(']');
 
         // If the host is already an IP addr (v4 or v6),
@@ -685,8 +624,9 @@ where
             dns::SocketAddrs::new(addrs)
         };
 
-        let c: ConnectingTcp<'_> = ConnectingTcp::new(addrs, &config);
-        let sock: TcpStream = c.connect().await?;
+        let c = ConnectingTcp::new(addrs, config);
+
+        let sock = c.connect().await?;
 
         if let Err(_e) = sock.set_nodelay(config.nodelay) {
             warn!("tcp set_nodelay error: {_e}");
@@ -895,6 +835,39 @@ impl ConnectingTcpRemote {
             )),
         }
     }
+}
+
+/// Prepares a caller's connected stream the way `connect` prepares a new socket.
+///
+/// Bind address, interface, buffer sizes and address reuse only take effect before a socket
+/// connects, so they are not applied here.
+fn use_preconnected(
+    stream: std::net::TcpStream,
+    config: &Config,
+) -> Result<TcpStream, ConnectError> {
+    stream
+        .set_nonblocking(true)
+        .map_err(ConnectError::m("tcp set_nonblocking error"))?;
+
+    if let Err(_e) = stream.set_nodelay(config.nodelay) {
+        warn!("tcp set_nodelay error: {_e}");
+    }
+
+    let socket = socket2::SockRef::from(&stream);
+    if let Some(tcp_keepalive) = &config.tcp_keepalive_config.into_tcpkeepalive() {
+        if let Err(_e) = socket.set_tcp_keepalive(tcp_keepalive) {
+            warn!("tcp set_keepalive error: {_e}");
+        }
+    }
+
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    if let Some(tcp_user_timeout) = &config.tcp_user_timeout {
+        if let Err(_e) = socket.set_tcp_user_timeout(Some(*tcp_user_timeout)) {
+            warn!("tcp set_tcp_user_timeout error: {_e}");
+        }
+    }
+
+    TcpStream::from_std(stream).map_err(ConnectError::m("tcp from_std error"))
 }
 
 fn bind_local_address(
