@@ -1595,10 +1595,19 @@ impl ClientBuilder {
     /// instead of dialing the request's host.
     ///
     /// The stream carries exactly one connection. Later requests reuse it while the pool holds
-    /// it. A request that needs a new connection fails with a connect error: for example a
-    /// redirect to another host, or an HTTP/1.1 request that starts before the previous response
-    /// has returned the connection to the pool. The client owns the stream and closes it when the
-    /// client and its connection drop.
+    /// it. A request that needs a new connection fails with a connect error. For redirects, that
+    /// happens when:
+    ///
+    /// - the redirect goes to another host;
+    /// - the 3xx response says `Connection: close`;
+    /// - the redirect drops the 3xx response before the client has read its whole body, for
+    ///   example a large body or one that arrives after the headers. The client then closes the
+    ///   connection;
+    /// - on HTTP/1.1 with a multi-threaded runtime, the next hop starts before the connection is
+    ///   back in the pool. This can happen even after an empty or small body, and more often
+    ///   after a chunked one.
+    ///
+    /// The client owns the stream and closes it when the client and its connection drop.
     pub fn tcp_stream(mut self, stream: std::net::TcpStream) -> ClientBuilder {
         self.preconnected_stream = Some(stream);
         self
