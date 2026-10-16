@@ -14,7 +14,10 @@ use support::server::{self, Event, Server};
 use wreq::{Body, Client, redirect::Policy};
 
 fn client_over(server: &Server) -> Client {
-    let stream = TcpStream::connect(server.addr()).unwrap();
+    client_with(TcpStream::connect(server.addr()).unwrap())
+}
+
+fn client_with(stream: TcpStream) -> Client {
     Client::builder()
         .tcp_stream(stream)
         .redirect(Policy::default())
@@ -110,9 +113,11 @@ async fn unused_stream_closes_when_the_client_drops() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn redirect_to_another_host_fails_without_a_second_request() {
-    let (server, requests) = counting_server();
-    let client = client_over(&server);
+async fn redirect_to_another_host_fails_and_keeps_the_first_connection() {
+    let (mut server, requests) = counting_server();
+    let stream = TcpStream::connect(server.addr()).unwrap();
+    let local_addr = stream.local_addr().unwrap();
+    let client = client_with(stream);
 
     let err = client
         .get(format!("http://{}/cross", server.addr()))
@@ -127,4 +132,21 @@ async fn redirect_to_another_host_fails_without_a_second_request() {
         error_chain(&err)
     );
     assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+    // An immediate request can race the pool taking the connection back.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let res = client
+        .get(format!("http://{}/", server.addr()))
+        .send()
+        .await
+        .unwrap_or_else(|err| panic!("{}", error_chain(&err)));
+    assert_eq!(res.local_addr(), Some(local_addr));
+    assert_eq!(res.text().await.unwrap(), "ok");
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+
+    drop(client);
+    assert!(
+        wait_for_close(&mut server).await,
+        "the connection stayed open after the client dropped"
+    );
 }
