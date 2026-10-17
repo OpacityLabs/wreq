@@ -307,7 +307,6 @@ pub use self::{
     ext::{ResponseBuilderExt, ResponseExt},
     into_uri::IntoUri,
     proxy::{NoProxy, Proxy},
-    tls::*,
 };
 
 fn _assert_impls() {
