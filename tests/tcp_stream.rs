@@ -127,7 +127,8 @@ async fn redirect_to_another_host_fails_and_keeps_the_first_connection() {
 
     assert!(err.is_connect());
     assert!(
-        error_chain(&err).contains("the preconnected stream is already used"),
+        error_chain(&err)
+            .contains("the preconnected stream carries a connection to another destination"),
         "{}",
         error_chain(&err)
     );

@@ -13,7 +13,7 @@ use tokio::{
 };
 use tokio_boring2::SslStream;
 
-use super::{AsyncConnWithInfo, Connected, Connection, TlsInfoFactory};
+use super::{AsyncConnWithInfo, Connected, Connection, TlsInfoFactory, preconnected::Lease};
 use crate::{
     proxy::matcher::Intercept,
     tls::{TlsInfo, conn::MaybeHttpsStream},
@@ -29,6 +29,7 @@ pin_project! {
         pub(super) inner: Box<dyn AsyncConnWithInfo>,
         pub(super) tls_info: bool,
         pub(super) proxy: Option<Intercept>,
+        pub(super) lease: Option<Lease>,
     }
 }
 

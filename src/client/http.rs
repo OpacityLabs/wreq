@@ -514,8 +514,13 @@ impl ClientBuilder {
                 DynResolver::new(resolver)
             };
 
+            // A preconnected stream carries the only connection, so a connect that loses the
+            // race to the pool has no socket to save.
+            let pool_background_connect = self.preconnected_stream.is_none();
+
             // Build connector
             let connector = Connector::builder(config.proxies, resolver)
+                .preconnected_stream(self.preconnected_stream)
                 .timeout(config.connect_timeout)
                 .tls_info(config.tls_info)
                 .tls_options(tls_options)
@@ -537,9 +542,6 @@ impl ClientBuilder {
                         .keylog(config.keylog)
                 })
                 .with_http(|http| {
-                    if let Some(stream) = self.preconnected_stream {
-                        http.set_preconnected_stream(stream);
-                    }
                     http.enforce_http(false);
                     http.set_keepalive(config.tcp_keepalive);
                     http.set_keepalive_interval(config.tcp_keepalive_interval);
@@ -566,6 +568,7 @@ impl ClientBuilder {
                 .pool_idle_timeout(config.pool_idle_timeout)
                 .pool_max_idle_per_host(config.pool_max_idle_per_host)
                 .pool_max_size(config.pool_max_size)
+                .pool_background_connect(pool_background_connect)
                 .build(connector)
                 .map_err(Into::into as _)
         };
@@ -1591,21 +1594,23 @@ impl ClientBuilder {
         self
     }
 
-    /// Sends the client's first connection over `stream`, an already connected TCP stream,
-    /// instead of dialing the request's host.
+    /// Sends the client's only connection over `stream`, an already connected TCP stream,
+    /// instead of dialing the request's host. Proxies do not apply.
     ///
-    /// The stream carries exactly one connection. Later requests reuse it while the pool holds
-    /// it. A request that needs a new connection fails with a connect error. For redirects, that
-    /// happens when:
+    /// The first request takes the stream and fixes the connection's destination: the scheme,
+    /// host and port, and any per-request connection options. A later request to that destination
+    /// waits for the connection: over HTTP/1.1 until the previous response ends, over HTTP/2 until
+    /// the connection is ready. The connect timeout, if set, also limits this wait.
+    ///
+    /// A request fails with a connect error when it goes to another destination, or when the
+    /// connection closes before the request gets it. For redirects, that happens when:
     ///
     /// - the redirect goes to another host;
-    /// - the 3xx response says `Connection: close`;
-    /// - the redirect drops the 3xx response before the client has read its whole body, for
-    ///   example a large body or one that arrives after the headers. The client then closes the
-    ///   connection;
-    /// - on HTTP/1.1 with a multi-threaded runtime, the next hop starts before the connection is
-    ///   back in the pool. This can happen even after an empty or small body, and more often
-    ///   after a chunked one.
+    /// - over HTTP/1.1, the 3xx response says `Connection: close`;
+    /// - over HTTP/1.1, the redirect drops the 3xx response before the client has read its whole
+    ///   body, for example a large body or one that arrives after the headers. The client then
+    ///   closes the connection. On a multi-threaded runtime, a small chunked body can also hit
+    ///   this now and then.
     ///
     /// The client owns the stream and closes it when the client and its connection drop.
     pub fn tcp_stream(mut self, stream: std::net::TcpStream) -> ClientBuilder {
