@@ -24,7 +24,6 @@ use super::{Connected, Connection};
 use crate::{
     dns::{self, GaiResolver, InternalResolve, resolve},
     error::BoxError,
-    sync::Mutex,
 };
 
 /// A connector for the `http` scheme.
@@ -39,7 +38,6 @@ use crate::{
 pub struct HttpConnector<R = GaiResolver> {
     config: Arc<Config>,
     resolver: R,
-    preconnected: Option<Arc<Mutex<Option<std::net::TcpStream>>>>,
 }
 
 /// Extra information about the transport when an HttpConnector is used.
@@ -353,17 +351,39 @@ impl<R> HttpConnector<R> {
                 tcp_user_timeout: None,
             }),
             resolver,
-            preconnected: None,
         }
     }
 
-    /// Uses `stream`, an already connected TCP stream, for the first connection instead of
-    /// dialing the destination.
+    /// Prepares a caller's connected stream the way `connect` prepares a new socket.
     ///
-    /// The stream carries one connection. Every later connect fails, whatever its destination.
-    #[inline]
-    pub fn set_preconnected_stream(&mut self, stream: std::net::TcpStream) {
-        self.preconnected = Some(Arc::new(Mutex::new(Some(stream))));
+    /// Bind address, interface, buffer sizes and address reuse only take effect before a socket
+    /// connects, so they are not applied here.
+    pub(crate) fn adopt(&self, stream: std::net::TcpStream) -> Result<TcpStream, ConnectError> {
+        let config = &self.config;
+
+        stream
+            .set_nonblocking(true)
+            .map_err(ConnectError::m("tcp set_nonblocking error"))?;
+
+        if let Err(_e) = stream.set_nodelay(config.nodelay) {
+            warn!("tcp set_nodelay error: {_e}");
+        }
+
+        let socket = socket2::SockRef::from(&stream);
+        if let Some(tcp_keepalive) = &config.tcp_keepalive_config.into_tcpkeepalive() {
+            if let Err(_e) = socket.set_tcp_keepalive(tcp_keepalive) {
+                warn!("tcp set_keepalive error: {_e}");
+            }
+        }
+
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        if let Some(tcp_user_timeout) = &config.tcp_user_timeout {
+            if let Err(_e) = socket.set_tcp_user_timeout(Some(*tcp_user_timeout)) {
+                warn!("tcp set_tcp_user_timeout error: {_e}");
+            }
+        }
+
+        TcpStream::from_std(stream).map_err(ConnectError::m("tcp from_std error"))
     }
 
     /// Option to enforce all `Uri`s have the `http` scheme.
@@ -508,7 +528,6 @@ impl<R> HttpConnector<R> {
 static INVALID_NOT_HTTP: &str = "invalid URI, scheme is not http";
 static INVALID_MISSING_SCHEME: &str = "invalid URI, scheme is missing";
 static INVALID_MISSING_HOST: &str = "invalid URI, host is missing";
-static PRECONNECTED_STREAM_USED: &str = "the preconnected stream is already used";
 
 // R: Debug required for now to allow adding it to debug output later...
 impl<R: fmt::Debug> fmt::Debug for HttpConnector<R> {
@@ -594,15 +613,6 @@ where
 {
     async fn call_async(&mut self, dst: Uri) -> Result<TcpStream, ConnectError> {
         let config = &self.config;
-
-        if let Some(preconnected) = &self.preconnected {
-            let stream = preconnected.lock().take().ok_or(ConnectError {
-                msg: PRECONNECTED_STREAM_USED,
-                addr: None,
-                cause: None,
-            })?;
-            return use_preconnected(stream, config);
-        }
 
         let (host, port) = get_host_port(config, &dst)?;
         let host = host.trim_start_matches('[').trim_end_matches(']');
@@ -835,39 +845,6 @@ impl ConnectingTcpRemote {
             )),
         }
     }
-}
-
-/// Prepares a caller's connected stream the way `connect` prepares a new socket.
-///
-/// Bind address, interface, buffer sizes and address reuse only take effect before a socket
-/// connects, so they are not applied here.
-fn use_preconnected(
-    stream: std::net::TcpStream,
-    config: &Config,
-) -> Result<TcpStream, ConnectError> {
-    stream
-        .set_nonblocking(true)
-        .map_err(ConnectError::m("tcp set_nonblocking error"))?;
-
-    if let Err(_e) = stream.set_nodelay(config.nodelay) {
-        warn!("tcp set_nodelay error: {_e}");
-    }
-
-    let socket = socket2::SockRef::from(&stream);
-    if let Some(tcp_keepalive) = &config.tcp_keepalive_config.into_tcpkeepalive() {
-        if let Err(_e) = socket.set_tcp_keepalive(tcp_keepalive) {
-            warn!("tcp set_keepalive error: {_e}");
-        }
-    }
-
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    if let Some(tcp_user_timeout) = &config.tcp_user_timeout {
-        if let Err(_e) = socket.set_tcp_user_timeout(Some(*tcp_user_timeout)) {
-            warn!("tcp set_tcp_user_timeout error: {_e}");
-        }
-    }
-
-    TcpStream::from_std(stream).map_err(ConnectError::m("tcp from_std error"))
 }
 
 fn bind_local_address(

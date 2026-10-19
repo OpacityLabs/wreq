@@ -126,6 +126,7 @@ struct Config {
     retry_canceled_requests: bool,
     set_host: bool,
     ver: Ver,
+    pool_background_connect: bool,
 }
 
 // ===== impl HttpClient =====
@@ -395,7 +396,7 @@ where
                 //
                 // If it *wasn't* ready yet, then the connect future will
                 // have been started...
-                if connecting.started() {
+                if connecting.started() && self.config.pool_background_connect {
                     let bg = connecting
                         .map_err(|_err| {
                             trace!("background connect error: {}", _err);
@@ -837,6 +838,7 @@ impl Builder {
                 retry_canceled_requests: true,
                 set_host: true,
                 ver: Ver::Auto,
+                pool_background_connect: true,
             },
             exec: exec.clone(),
 
@@ -963,6 +965,21 @@ impl Builder {
     #[inline]
     pub fn retry_canceled_requests(mut self, val: bool) -> Self {
         self.config.retry_canceled_requests = val;
+        self
+    }
+
+    /// Set whether a connect that loses the race to an idle pooled connection finishes in the
+    /// background.
+    ///
+    /// The finished connection goes into the pool, so its socket is not wasted. Disable this when
+    /// the connector carries only one connection. Its losing connect can only wait for that
+    /// connection to close. In the background it holds the pool, and the pool holds the
+    /// connection, so neither closes.
+    ///
+    /// Default is `true`.
+    #[inline]
+    pub fn pool_background_connect(mut self, val: bool) -> Self {
+        self.config.pool_background_connect = val;
         self
     }
 

@@ -2,6 +2,7 @@
 mod conn;
 mod connector;
 mod http;
+mod preconnected;
 mod proxy;
 mod tls_info;
 #[cfg(unix)]

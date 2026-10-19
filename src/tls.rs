@@ -4,7 +4,7 @@
 //!
 //! - Various parts of TLS can also be configured or even disabled on the `ClientBuilder`.
 
-pub mod conn;
+pub(crate) mod conn;
 mod keylog;
 mod options;
 mod x509;
