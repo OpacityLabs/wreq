@@ -3,6 +3,7 @@
 changelog_path = "./RELEASE.md"
 changelog_config = "./.cliff.toml"
 release_always = false
+pr_branch_prefix = "release-plz-main-"
 # GitHub release with notes generated server-side by GitHub.
 git_release_enable = true
 git_release_name = "v{{ version }}"
