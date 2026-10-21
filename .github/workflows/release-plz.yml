@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - "0.16.x"
 
 jobs:
   release-plz-release:
@@ -14,6 +15,7 @@ jobs:
       releases_created: ${{ steps.release-plz.outputs.releases_created }}
     permissions:
       contents: write
+      # release-plz exchanges this OIDC token for a crates.io publish token.
       id-token: write
     steps:
       - &checkout
@@ -31,7 +33,6 @@ jobs:
         uses: release-plz/action@v0.5
         with:
           command: release
-          config: .github/.release-plz.toml
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
 
@@ -58,6 +59,5 @@ jobs:
         uses: release-plz/action@v0.5
         with:
           command: release-pr
-          config: .github/.release-plz.toml
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
