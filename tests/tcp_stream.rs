@@ -343,3 +343,98 @@ async fn upgrade_is_refused_and_closes_the_connection() {
         started.elapsed()
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_timeout_ends_the_only_connection() {
+    let (mut server, requests) = redirect_server();
+    let client = Client::builder()
+        .tcp_stream(TcpStream::connect(server.addr()).unwrap())
+        .pool_idle_timeout(Duration::from_millis(100))
+        .build()
+        .unwrap();
+    let url = format!("http://{}/", server.addr());
+
+    let body = client
+        .get(&url)
+        .send()
+        .await
+        .unwrap_or_else(|err| panic!("{}", error_chain(&err)))
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(body, "ok");
+
+    // The pool evicts the idle connection while the client is still alive.
+    assert!(
+        wait_for_close(&mut server).await,
+        "the idle connection stayed open past the idle timeout"
+    );
+
+    let err = client.get(&url).send().await.unwrap_err();
+    assert!(err.is_connect(), "{}", error_chain(&err));
+    assert!(
+        error_chain(&err).contains("the connection on the preconnected stream is closed"),
+        "{}",
+        error_chain(&err)
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn connection_close_fails_every_waiter() {
+    let mut server = server::http(|req| async move {
+        if req.uri().path() == "/slow-close" {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            http::Response::builder()
+                .header("connection", "close")
+                .body(Body::from("ok"))
+                .unwrap()
+        } else {
+            http::Response::new("ok".into())
+        }
+    });
+    let client = client_over(&server);
+
+    let slow = tokio::spawn({
+        let client = client.clone();
+        let url = format!("http://{}/slow-close", server.addr());
+        async move { client.get(url).send().await?.text().await }
+    });
+    // Let the slow request take the stream first.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let started = Instant::now();
+    let waiters: Vec<_> = (0..5)
+        .map(|_| {
+            let client = client.clone();
+            let url = format!("http://{}/", server.addr());
+            tokio::spawn(async move { client.get(url).send().await.map(|_| ()) })
+        })
+        .collect();
+
+    for waiter in waiters {
+        let err = waiter.await.unwrap().unwrap_err();
+        assert!(err.is_connect(), "{}", error_chain(&err));
+        assert!(
+            error_chain(&err).contains("the connection on the preconnected stream is closed"),
+            "{}",
+            error_chain(&err)
+        );
+    }
+    // Every waiter ends when the connection closes, not later.
+    assert!(
+        started.elapsed() < Duration::from_millis(1000),
+        "{:?}",
+        started.elapsed()
+    );
+
+    let body = slow
+        .await
+        .unwrap()
+        .unwrap_or_else(|err| panic!("{}", error_chain(&err)));
+    assert_eq!(body, "ok");
+    assert!(
+        wait_for_close(&mut server).await,
+        "the server never saw the close"
+    );
+}

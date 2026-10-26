@@ -483,8 +483,10 @@ where
             Either::Left(
                 Oneshot::new(connector, req)
                     .map_err(|src| Error::new(ErrorKind::Connect, src))
-                    .and_then(move |io| {
-                        let connected = io.connected();
+                    .and_then(move |mut io| {
+                        // The lease stays with the pooled connection, so a connect waiting on a
+                        // preconnected stream ends when the pool can no longer hand this one out.
+                        let connected = io.connected().with_lease(io.take_lease());
                         // If ALPN is h2 and we aren't http2_only already,
                         // then we need to convert our pool checkout into
                         // a single HTTP2 one.
@@ -980,8 +982,9 @@ impl Builder {
     ///
     /// The finished connection goes into the pool, so its socket is not wasted. Disable this when
     /// the connector carries only one connection. Its losing connect can only wait for that
-    /// connection to close. In the background it holds the pool, and the pool holds the
-    /// connection, so neither closes.
+    /// connection to go away. In the background it holds the pool, and the pool holds the
+    /// connection, so the socket outlives the client: until `pool_idle_timeout` evicts the
+    /// connection, or for good when there is no idle timeout.
     ///
     /// Default is `true`.
     #[inline]

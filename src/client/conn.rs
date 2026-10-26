@@ -30,6 +30,7 @@ pub(super) use self::{
     conn::Conn,
     connector::Connector,
     http::{HttpInfo, TcpConnectOptions},
+    preconnected::Lease,
     proxy::tunnel,
     tls_info::TlsInfoFactory,
 };
@@ -74,6 +75,14 @@ impl<T> AsyncConnWithInfo for T where T: AsyncConn + TlsInfoFactory {}
 pub trait Connection {
     /// Return metadata describing the connection.
     fn connected(&self) -> Connected;
+
+    /// Takes the lease on a preconnected stream, if this connection runs over one.
+    ///
+    /// The client stores it with the pooled connection, so it drops when the pool can no longer
+    /// hand the connection out, not when the I/O object is finally dropped.
+    fn take_lease(&mut self) -> Option<Lease> {
+        None
+    }
 }
 
 /// Indicates the negotiated ALPN protocol.
@@ -128,6 +137,8 @@ pub struct Connected {
     proxy: Box<ProxyIdentity>,
     extra: Option<Extra>,
     poisoned: PoisonPill,
+    /// Lease on a preconnected stream. Only the pool's copy holds it; see `clone`.
+    lease: Option<Lease>,
 }
 
 // ===== impl PoisonPill =====
@@ -176,7 +187,14 @@ impl Connected {
             proxy: Box::new(ProxyIdentity::default()),
             extra: None,
             poisoned: PoisonPill::healthy(),
+            lease: None,
         }
+    }
+
+    /// Attach the lease on a preconnected stream. It lives as long as this `Connected` does.
+    pub(crate) fn with_lease(mut self, lease: Option<Lease>) -> Connected {
+        self.lease = lease;
+        self
     }
 
     /// Set extra connection information to be set in the extensions of every `Response`.
@@ -261,12 +279,16 @@ impl Connected {
 
     // Don't public expose that `Connected` is `Clone`, unsure if we want to
     // keep that contract...
+    //
+    // The lease is not cloned. Clones go into errors and into the HTTP/2 copy handed to a
+    // request; if they carried it, a held error would keep a waiting connect parked.
     pub(crate) fn clone(&self) -> Connected {
         Connected {
             alpn: self.alpn,
             proxy: self.proxy.clone(),
             extra: self.extra.clone(),
             poisoned: self.poisoned.clone(),
+            lease: None,
         }
     }
 }

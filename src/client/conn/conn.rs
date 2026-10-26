@@ -65,6 +65,10 @@ impl Connection for Conn {
             connected
         }
     }
+
+    fn take_lease(&mut self) -> Option<Lease> {
+        self.lease.take()
+    }
 }
 
 impl AsyncRead for Conn {
