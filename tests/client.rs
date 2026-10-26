@@ -594,6 +594,90 @@ async fn overridden_dns_resolution_with_hickory_dns_multiple() {
 }
 
 #[test]
+#[cfg(feature = "query")]
+fn query_appends_parameters() {
+    let client = Client::new();
+    let empty: [(&str, &str); 0] = [];
+    let cases = [
+        (
+            "http://example.com",
+            "http://example.com/?foo=bar&foo=a+b%26c%3Dd",
+        ),
+        (
+            "http://example.com/path",
+            "http://example.com/path?foo=bar&foo=a+b%26c%3Dd",
+        ),
+        (
+            "http://example.com/path?",
+            "http://example.com/path?foo=bar&foo=a+b%26c%3Dd",
+        ),
+        (
+            "http://EXAMPLE.com:80/a/../%2f?foo=original&encoded=%2f+%20",
+            "http://example.com/%2f?foo=original&encoded=%2f+%20&foo=bar&foo=a+b%26c%3Dd",
+        ),
+        (
+            "https://example.com?existing=1",
+            "https://example.com/?existing=1&foo=bar&foo=a+b%26c%3Dd",
+        ),
+        (
+            "custom://example.com?existing=1",
+            "custom://example.com/?existing=1&foo=bar&foo=a+b%26c%3Dd",
+        ),
+        (
+            "https://[::1]:443/path?existing=%2F",
+            "https://[::1]/path?existing=%2F&foo=bar&foo=a+b%26c%3Dd",
+        ),
+        (
+            "https://example.com/a/%2e%2e/b?quoted='value'",
+            "https://example.com/b?quoted=%27value%27&foo=bar&foo=a+b%26c%3Dd",
+        ),
+    ];
+
+    for (uri, expected) in cases {
+        let original = client.get(uri).build().unwrap();
+        let request = client.get(uri).query(&empty).build().unwrap();
+        assert_eq!(request.uri().to_string(), original.uri().to_string());
+
+        let request = client
+            .get(uri)
+            .query(&[("foo", "bar")])
+            .query(&empty)
+            .query(&[("foo", "a b&c=d")])
+            .build()
+            .unwrap();
+        assert_eq!(request.uri().to_string(), expected);
+        assert!(
+            request
+                .uri()
+                .path_and_query()
+                .unwrap()
+                .as_str()
+                .starts_with('/')
+        );
+    }
+
+    let error = client
+        .get("http://example.com/")
+        .query(&42)
+        .query(&[("foo", "bar")])
+        .build()
+        .unwrap_err();
+    assert!(error.is_builder());
+
+    for (method, uri) in [
+        (http::Method::CONNECT, "example.com:80"),
+        (http::Method::GET, "/relative"),
+    ] {
+        let request = wreq::Request::new(method, uri.parse().unwrap());
+        let error = wreq::RequestBuilder::from_parts(client.clone(), request)
+            .query(&[("foo", "bar")])
+            .build()
+            .unwrap_err();
+        assert!(error.is_builder());
+    }
+}
+
+#[test]
 #[cfg(feature = "json")]
 fn add_json_default_content_type_if_not_set_manually() {
     let mut map = HashMap::new();
@@ -727,10 +811,7 @@ async fn http1_only() {
 
     assert_eq!(resp.version(), wreq::Version::HTTP_11);
 
-    let resp = Client::builder()
-        .build()
-        .unwrap()
-        .get(format!("http://{}", server.addr()))
+    let resp = wreq::get(format!("http://{}", server.addr()))
         .version(Version::HTTP_11)
         .send()
         .await
@@ -754,10 +835,7 @@ async fn http2_only() {
 
     assert_eq!(resp.version(), wreq::Version::HTTP_2);
 
-    let resp = Client::builder()
-        .build()
-        .unwrap()
-        .get(format!("http://{}", server.addr()))
+    let resp = wreq::get(format!("http://{}", server.addr()))
         .version(Version::HTTP_2)
         .send()
         .await
@@ -809,7 +887,7 @@ async fn http1_send_case_sensitive_headers() {
     orig_headers.insert("X-custom-header");
     orig_headers.insert("Host");
 
-    let resp = wreq::get("https://tls.peet.ws/api/all")
+    let resp = wreq::get("https://tls.browserleaks.com")
         .header("X-Custom-Header", "value")
         .orig_headers(orig_headers)
         .version(Version::HTTP_11)
@@ -1095,4 +1173,28 @@ async fn response_trailers() {
     assert_eq!(body, "HelloWorld!");
     assert_eq!(trailers["chunky-trailer1"], "value1");
     assert_eq!(trailers["chunky-trailer2"], "value2");
+}
+
+#[tokio::test]
+async fn dns_resolution_failure_is_dns_error() {
+    let _ = env_logger::builder().is_test(true).try_init();
+
+    struct FailingResolver;
+
+    impl wreq::dns::Resolve for FailingResolver {
+        fn resolve(&self, _name: wreq::dns::Name) -> reqwest::dns::Resolving {
+            Box::pin(async { Err("simulated resolver failure".into()) })
+        }
+    }
+
+    let client = Client::builder()
+        .no_proxy()
+        .dns_resolver(FailingResolver)
+        .build()
+        .expect("client builder");
+
+    let err = client.get("http://hyper.rs").send().await.unwrap_err();
+
+    assert!(err.is_dns(), "expected a DNS error, got: {err:?}");
+    assert!(err.is_connect(), "expected is_connect() to also be true");
 }

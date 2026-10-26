@@ -25,6 +25,31 @@ const USERINFO: &AsciiSet = &PATH
     .add(b'^')
     .add(b'|');
 
+macro_rules! impl_into_shared {
+    ($(#[$meta:meta])* $vis:vis trait $name:ident => $target:path) => {
+        $(#[$meta])*
+        $vis trait $name {
+            #[doc = concat!("Converts this type into a shared [`", stringify!($target), "`].")]
+            fn into_shared(self) -> Arc<dyn $target>;
+        }
+
+        impl $name for Arc<dyn $target> {
+            #[inline]
+            fn into_shared(self) -> Arc<dyn $target> { self }
+        }
+
+        impl<R: $target + 'static> $name for Arc<R> {
+            #[inline]
+            fn into_shared(self) -> Arc<dyn $target> { self }
+        }
+
+        impl<R: $target + 'static> $name for R {
+            #[inline]
+            fn into_shared(self) -> Arc<dyn $target> { Arc::new(self) }
+        }
+    };
+}
+
 /// Extension trait for http::Response objects
 ///
 /// Provides methods to extract URI information from HTTP responses
@@ -56,10 +81,6 @@ pub(crate) trait UriExt {
 
     /// Returns the port of the URI, or the default port for the scheme if none is specified.
     fn port_or_default(&self) -> u16;
-
-    /// Sets the query component of the URI, replacing any existing query.
-    #[cfg(feature = "query")]
-    fn set_query(&mut self, query: String);
 
     /// Returns the username and password from the URI's userinfo, if present.
     fn userinfo(&self) -> (Option<&str>, Option<&str>);
@@ -102,32 +123,6 @@ impl UriExt for Uri {
             Some(p) => p.as_u16(),
             None if self.is_https() => 443u16,
             _ => 80u16,
-        }
-    }
-
-    #[cfg(feature = "query")]
-    fn set_query(&mut self, query: String) {
-        use http::uri::PathAndQuery;
-
-        if query.is_empty() {
-            return;
-        }
-
-        let path = self.path();
-        let parts = match PathAndQuery::from_maybe_shared(Bytes::from(format!("{path}?{query}"))) {
-            Ok(path_and_query) => {
-                let mut parts = self.clone().into_parts();
-                parts.path_and_query.replace(path_and_query);
-                parts
-            }
-            Err(_err) => {
-                debug!("Failed to set query in URI: {_err}");
-                return;
-            }
-        };
-
-        if let Ok(uri) = Uri::from_parts(parts) {
-            *self = uri;
         }
     }
 
@@ -351,25 +346,6 @@ mod tests {
         assert_eq!(password, Some("p%40ss%20word"));
 
         assert_eq!(uri.to_string(), "http://:p%40ss%20word@example.com/");
-    }
-
-    #[cfg(feature = "query")]
-    #[test]
-    fn test_set_query() {
-        let mut uri: Uri = "http://example.com/path".parse().unwrap();
-        uri.set_query("key=value&foo=bar".to_string());
-
-        assert_eq!(uri.to_string(), "http://example.com/path?key=value&foo=bar");
-
-        let mut uri: Uri = "http://example.com/path?existing=param".parse().unwrap();
-        uri.set_query("newkey=newvalue".to_string());
-
-        assert_eq!(uri.to_string(), "http://example.com/path?newkey=newvalue");
-
-        let mut uri: Uri = "http://example.com/path".parse().unwrap();
-        uri.set_query("".to_string());
-
-        assert_eq!(uri.to_string(), "http://example.com/path");
     }
 
     #[test]
