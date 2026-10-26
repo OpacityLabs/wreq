@@ -127,6 +127,7 @@ struct Config {
     set_host: bool,
     ver: Ver,
     pool_background_connect: bool,
+    http1_upgrades: bool,
 }
 
 // ===== impl HttpClient =====
@@ -463,6 +464,7 @@ where
             _ => self.config.ver,
         };
         let is_ver_h2 = ver == Ver::Http2;
+        let http1_upgrades = self.config.http1_upgrades;
         let connector = self.connector.clone();
         lazy(move || {
             // Try to take a "connecting lock".
@@ -545,9 +547,13 @@ where
                                     // Spawn the connection task in the background using the executor.
                                     // The task manages the HTTP/1.1 connection, including upgrades (e.g., WebSocket).
                                     // Errors are sent via err_tx to ensure they can be checked if the sender (tx) fails.
-                                    executor.execute(
+                                    let conn = if http1_upgrades {
                                         conn.with_upgrades()
-                                                .map_err(|e| {
+                                    } else {
+                                        conn.refusing_upgrades()
+                                    };
+                                    executor.execute(
+                                        conn.map_err(|e| {
                                                 // Log the connection error at debug level for diagnostic purposes.
                                                 debug!("client connection error: {:?}", e);
                                                 // Log that the error is being sent to the error channel.
@@ -839,6 +845,7 @@ impl Builder {
                 set_host: true,
                 ver: Ver::Auto,
                 pool_background_connect: true,
+                http1_upgrades: true,
             },
             exec: exec.clone(),
 
@@ -980,6 +987,20 @@ impl Builder {
     #[inline]
     pub fn pool_background_connect(mut self, val: bool) -> Self {
         self.config.pool_background_connect = val;
+        self
+    }
+
+    /// Set whether HTTP/1 connections hand their socket out on a `101 Switching Protocols`
+    /// response.
+    ///
+    /// When disabled, the 101 response is still returned, but the connection is closed instead
+    /// of becoming an `Upgraded` stream, and `Response::upgrade` fails. Disable this when the
+    /// connector carries only one connection and the socket must stay with the client.
+    ///
+    /// Default is `true`.
+    #[inline]
+    pub fn http1_upgrades(mut self, val: bool) -> Self {
+        self.config.http1_upgrades = val;
         self
     }
 

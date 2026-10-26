@@ -514,9 +514,9 @@ impl ClientBuilder {
                 DynResolver::new(resolver)
             };
 
-            // A preconnected stream carries the only connection, so a connect that loses the
-            // race to the pool has no socket to save.
-            let pool_background_connect = self.preconnected_stream.is_none();
+            // A preconnected stream carries the only connection: a connect that loses the race
+            // to the pool has no socket to save, and an upgrade must not take the socket away.
+            let preconnected = self.preconnected_stream.is_some();
 
             // Build connector
             let connector = Connector::builder(config.proxies, resolver)
@@ -568,7 +568,8 @@ impl ClientBuilder {
                 .pool_idle_timeout(config.pool_idle_timeout)
                 .pool_max_idle_per_host(config.pool_max_idle_per_host)
                 .pool_max_size(config.pool_max_size)
-                .pool_background_connect(pool_background_connect)
+                .pool_background_connect(!preconnected)
+                .http1_upgrades(!preconnected)
                 .build(connector)
                 .map_err(Into::into as _)
         };
@@ -1611,6 +1612,10 @@ impl ClientBuilder {
     ///   body, for example a large body or one that arrives after the headers. The client then
     ///   closes the connection. On a multi-threaded runtime, a small chunked body can also hit
     ///   this now and then.
+    ///
+    /// HTTP/1 upgrades are refused: the socket never leaves the client. A `101` response is
+    /// returned as is, but the connection is closed and [`Response::upgrade`](crate::Response::upgrade)
+    /// fails.
     ///
     /// The client owns the stream and closes it when the client and its connection drop.
     pub fn tcp_stream(mut self, stream: std::net::TcpStream) -> ClientBuilder {

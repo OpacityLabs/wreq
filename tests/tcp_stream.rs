@@ -11,6 +11,7 @@ use std::{
 };
 
 use support::server::{self, Event, Server};
+use tokio::io::AsyncReadExt;
 use wreq::{Body, Client, redirect::Policy};
 
 // The pool race needs worker threads and does not hit every run, so the redirect test repeats it.
@@ -270,4 +271,75 @@ async fn redirect_after_connection_close_fails() {
         error_chain(&err)
     );
     assert_eq!(requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn upgrade_is_refused_and_closes_the_connection() {
+    let server_eof = Arc::new(AtomicUsize::new(0));
+    let server = server::http({
+        let server_eof = server_eof.clone();
+        move |req| {
+            let server_eof = server_eof.clone();
+            tokio::spawn(async move {
+                let mut upgraded =
+                    hyper_util::rt::TokioIo::new(hyper::upgrade::on(req).await.unwrap());
+                let _ = upgraded.read_to_end(&mut Vec::new()).await;
+                server_eof.fetch_add(1, Ordering::SeqCst);
+            });
+            async {
+                http::Response::builder()
+                    .status(http::StatusCode::SWITCHING_PROTOCOLS)
+                    .header(http::header::CONNECTION, "upgrade")
+                    .header(http::header::UPGRADE, "foobar")
+                    .body(Body::default())
+                    .unwrap()
+            }
+        }
+    });
+    let client = client_over(&server);
+    let url = format!("http://{}/", server.addr());
+
+    let res = client
+        .get(&url)
+        .header(http::header::CONNECTION, "upgrade")
+        .header(http::header::UPGRADE, "foobar")
+        .send()
+        .await
+        .unwrap_or_else(|err| panic!("{}", error_chain(&err)));
+    assert_eq!(res.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+
+    // The socket stays with the client: the upgrade is refused and the server sees EOF.
+    let err = res.upgrade().await.unwrap_err();
+    assert!(
+        error_chain(&err).contains("upgrade refused, the connection was closed"),
+        "{}",
+        error_chain(&err)
+    );
+    let mut closed = false;
+    for _ in 0..200 {
+        if server_eof.load(Ordering::SeqCst) == 1 {
+            closed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(closed, "the socket stayed open after the refused upgrade");
+
+    // The only connection is gone, so the client can't send again.
+    let started = Instant::now();
+    let err = tokio::time::timeout(Duration::from_secs(2), client.get(&url).send())
+        .await
+        .expect("the request waited on a connection the pool can never hand out")
+        .unwrap_err();
+    assert!(err.is_connect(), "{}", error_chain(&err));
+    assert!(
+        error_chain(&err).contains("the connection on the preconnected stream is closed"),
+        "{}",
+        error_chain(&err)
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "{:?}",
+        started.elapsed()
+    );
 }
