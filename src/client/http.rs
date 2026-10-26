@@ -430,6 +430,14 @@ impl Client {
     ///
     /// This method fails if there was an error while sending request,
     /// redirect loop was detected or redirect limit was exhausted.
+    ///
+    /// # Preconnected stream
+    ///
+    /// On a client built with [`ClientBuilder::tcp_stream`] every request goes over one connection.
+    /// Over HTTP/1.1 a request waits until the previous response body has been read or dropped.
+    /// Awaiting this in the task that still holds that unread body waits forever unless
+    /// [`ClientBuilder::timeout`] or [`ClientBuilder::connect_timeout`] is set. Read or drop each
+    /// response before sending the next request on the client.
     pub fn execute(&self, request: Request) -> Pending {
         let req = http::Request::<Body>::from(request);
         // Prepare the future request by ensuring we use the exact same Service instance
@@ -1600,11 +1608,18 @@ impl ClientBuilder {
     ///
     /// The first request takes the stream and fixes the connection's destination: the scheme,
     /// host and port, and any per-request connection options. A later request to that destination
-    /// waits for the connection: over HTTP/1.1 until the previous response ends, over HTTP/2 until
-    /// the connection is ready. The connect timeout, if set, also limits this wait.
+    /// waits for the connection: over HTTP/1.1 until the previous response body has been read,
+    /// over HTTP/2 until the connection is ready. Nothing bounds that wait by default. Requests
+    /// queue on the one connection, so a response body that is never read holds every later
+    /// request. Set [`connect_timeout`](ClientBuilder::connect_timeout) or
+    /// [`timeout`](ClientBuilder::timeout) to put a limit on it.
     ///
     /// A request fails with a connect error when it goes to another destination, or when the
-    /// connection closes before the request gets it. For redirects, that happens when:
+    /// connection is gone before the request gets it. The connection is gone once the server
+    /// closes it, once the pool evicts it after
+    /// [`pool_idle_timeout`](ClientBuilder::pool_idle_timeout) (90 seconds by default), or once
+    /// the server answers `101 Switching Protocols`. After that the client cannot send again.
+    /// For redirects, the failure happens when:
     ///
     /// - the redirect goes to another host;
     /// - over HTTP/1.1, the 3xx response says `Connection: close`;

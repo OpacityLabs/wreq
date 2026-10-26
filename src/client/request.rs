@@ -730,6 +730,15 @@ impl RequestBuilder {
     /// This method fails if there was an error while sending request,
     /// redirect loop was detected or redirect limit was exhausted.
     ///
+    /// # Preconnected stream
+    ///
+    /// On a client built with [`ClientBuilder::tcp_stream`](crate::ClientBuilder::tcp_stream) every
+    /// request goes over one connection. Over HTTP/1.1 a request waits until the previous response
+    /// body has been read or dropped. Awaiting this in the task that still holds that unread body
+    /// waits forever unless [`ClientBuilder::timeout`](crate::ClientBuilder::timeout) or
+    /// [`ClientBuilder::connect_timeout`](crate::ClientBuilder::connect_timeout) is set. Read or
+    /// drop each response before sending the next request on the client.
+    ///
     /// # Example
     ///
     /// ```no_run
