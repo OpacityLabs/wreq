@@ -146,6 +146,24 @@ async fn same_host_redirect_reuses_the_stream_and_closes_it_on_drop() {
     assert_eq!(requests.load(Ordering::SeqCst), 2 * RUNS);
 }
 
+/// The first request names the host as the caller wrote it; a redirect's target goes through
+/// `url::Url`, which writes IP literals in canonical form. Both must count as one destination.
+#[tokio::test(flavor = "multi_thread")]
+async fn same_host_redirect_from_a_non_canonical_host_reuses_the_stream() {
+    let (server, requests) = redirect_server();
+    let port = server.addr().port();
+
+    let client = client_over(&server);
+    let res = client
+        .get(format!("http://127.000.000.001:{port}/same"))
+        .send()
+        .await
+        .unwrap_or_else(|err| panic!("{}", error_chain(&err)));
+    assert_eq!(res.uri().to_string(), format!("http://127.0.0.1:{port}/"));
+    assert_eq!(res.text().await.unwrap(), "ok");
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_requests_wait_for_the_stream_and_close_it_on_drop() {
     let mut server = server::http(|_req| async {
