@@ -73,10 +73,13 @@ impl ConnectRequest {
     where
         T: Into<Option<RequestOptions>>,
     {
+        // The key is the canonical origin, so a URI as written and a redirect's resolved target
+        // share a connection. The URI dialled stays as written.
+        let key = util::canonical_origin(&uri);
         ConnectRequest {
-            uri: uri.clone(),
+            uri,
             identifier: Arc::new(HashMemo::with_hasher(
-                ConnectExtra::new(uri, identifier),
+                ConnectExtra::new(key, identifier),
                 HASHER,
             )),
         }

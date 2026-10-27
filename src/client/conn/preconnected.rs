@@ -3,7 +3,9 @@
 //! The slot gives the stream a single owner and closes it if no connect happens.
 //!
 //! The wait, `destination` and the `closed` channel cover a connect that starts while the one
-//! connection is still in use. A same-host redirect over HTTP/1.1 can start before the pool gets
+//! connection is still in use. `destination` is the pool key, whose origin is canonical (see
+//! `util::canonical_origin`), so a redirect's resolved target compares equal to the URL the
+//! caller wrote. A same-host redirect over HTTP/1.1 can start before the pool gets
 //! the connection back, so wreq calls the connector again; the wait lets the pool win instead of
 //! failing the redirect. A connect to another destination can never reuse the stream, so it fails
 //! at once. Over HTTP/2 the connection goes back to the pool at once, so a redirect does not reach

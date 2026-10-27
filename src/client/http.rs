@@ -1607,7 +1607,9 @@ impl ClientBuilder {
     /// instead of dialing the request's host. Proxies do not apply.
     ///
     /// The first request takes the stream and fixes the connection's destination: the scheme,
-    /// host and port, and any per-request connection options. A later request to that destination
+    /// host and port as `url::Url` writes them (lowercase host, canonical IP literal, no default
+    /// port), and any per-request connection options. A URL as the caller wrote it and a
+    /// redirect's resolved target therefore name the same destination. A later request to it
     /// waits for the connection: over HTTP/1.1 until the previous response body has been read,
     /// over HTTP/2 until the connection is ready. Nothing bounds that wait by default. Requests
     /// queue on the one connection, so a response body that is never read holds every later
