@@ -23,6 +23,7 @@ use super::{
     AsyncConnWithInfo, BoxedConnectorLayer, BoxedConnectorService, Connection, HttpConnector,
     TlsInfoFactory, Unnameable,
     conn::{Conn, TlsConn},
+    preconnected::Preconnected,
     proxy,
     verbose::Verbose,
 };
@@ -62,6 +63,7 @@ pub struct ConnectorBuilder {
     #[cfg(feature = "socks")]
     resolver: DynResolver,
     http: HttpConnector,
+    preconnected: Option<Preconnected>,
     tls_options: TlsOptions,
     tls_builder: TlsConnectorBuilder,
 }
@@ -80,6 +82,7 @@ pub struct ConnectorService {
     #[cfg(feature = "socks")]
     resolver: DynResolver,
     http: HttpConnector,
+    preconnected: Option<Arc<Preconnected>>,
     tls: TlsConnector,
     tls_builder: Arc<TlsConnectorBuilder>,
 }
@@ -104,6 +107,15 @@ impl ConnectorBuilder {
         F: FnOnce(TlsConnectorBuilder) -> TlsConnectorBuilder,
     {
         self.tls_builder = call(self.tls_builder);
+        self
+    }
+
+    /// Use `stream`, an already connected TCP stream, for the only connection.
+    ///
+    /// Every connect then uses this stream instead of the proxies and the HTTP connector.
+    #[inline]
+    pub fn preconnected_stream(mut self, stream: Option<std::net::TcpStream>) -> ConnectorBuilder {
+        self.preconnected = stream.map(Preconnected::new);
         self
     }
 
@@ -147,6 +159,7 @@ impl ConnectorBuilder {
             #[cfg(feature = "socks")]
             resolver: self.resolver.clone(),
             http: self.http,
+            preconnected: self.preconnected.map(Arc::new),
             tls: self.tls_builder.build(&self.tls_options)?,
             tls_builder: Arc::new(self.tls_builder),
         };
@@ -214,6 +227,7 @@ impl Connector {
             #[cfg(feature = "socks")]
             resolver: resolver.clone(),
             http: HttpConnector::new_with_resolver(resolver),
+            preconnected: None,
             tls_options: TlsOptions::default(),
             tls_builder: TlsConnector::builder(),
         }
@@ -256,11 +270,13 @@ impl ConnectorService {
                 inner: self.config.verbose.wrap(inner),
                 tls_info: false,
                 proxy: None,
+                lease: None,
             },
             MaybeHttpsStream::Https(inner) => Conn {
                 inner: self.config.verbose.wrap(TlsConn::new(inner)),
                 tls_info: self.config.tls_info,
                 proxy: None,
+                lease: None,
             },
         };
 
@@ -283,6 +299,7 @@ impl ConnectorService {
             inner: conn,
             tls_info: self.config.tls_info,
             proxy: proxy.into(),
+            lease: None,
         })
     }
 
@@ -340,6 +357,34 @@ impl ConnectorService {
 }
 
 impl ConnectorService {
+    async fn connect_preconnected(
+        self,
+        req: ConnectRequest,
+        preconnected: Arc<Preconnected>,
+    ) -> Result<Conn, BoxError> {
+        trace!("connect over the preconnected stream: {:?}", req.uri());
+
+        let (stream, lease) = preconnected.acquire(&req).await?;
+        let stream = self.http.adopt(stream)?;
+
+        // Disable Nagle's algorithm for TLS handshake
+        if !self.config.tcp_nodelay {
+            stream.set_nodelay(true)?;
+        }
+
+        let mut connector = self.build_https_connector(req.extra())?;
+        let io = connector.call(EstablishedConn::new(stream, req)).await?;
+
+        // Re-enable Nagle's algorithm if it was disabled earlier
+        if !self.config.tcp_nodelay {
+            io.get_ref().set_nodelay(false)?;
+        }
+
+        let mut conn = self.conn_from_stream(io, None)?;
+        conn.lease = Some(lease);
+        Ok(conn)
+    }
+
     async fn connect_auto_proxy<P>(self, req: ConnectRequest, proxy: P) -> Result<Conn, BoxError>
     where
         P: Into<Option<Intercept>>,
@@ -502,8 +547,12 @@ impl ConnectorService {
 
         let timeout = self.config.timeout;
 
-        // Determine if a proxy should be used for this request.
         let fut = async {
+            if let Some(preconnected) = self.preconnected.clone() {
+                return self.connect_preconnected(req, preconnected).await;
+            }
+
+            // Determine if a proxy should be used for this request.
             let intercepted = req
                 .extra()
                 .proxy_matcher()

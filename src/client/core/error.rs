@@ -100,6 +100,9 @@ pub(super) enum User {
     /// User polled for an upgrade, but low-level API is not using upgrades.
     ManualUpgrade,
 
+    /// The server upgraded, but the client refuses upgrades and closed the connection.
+    UpgradeRefused,
+
     /// The dispatch task is gone.
     DispatchGone,
 }
@@ -234,6 +237,10 @@ impl Error {
         Error::new_user(User::ManualUpgrade)
     }
 
+    pub(super) fn new_user_upgrade_refused() -> Error {
+        Error::new_user(User::UpgradeRefused)
+    }
+
     pub(super) fn new_user_service<E: Into<Cause>>(cause: E) -> Error {
         Error::new_user(User::Service).with(cause)
     }
@@ -299,6 +306,7 @@ impl Error {
             Kind::User(User::Service) => "error from user's Service",
             Kind::User(User::NoUpgrade) => "no upgrade available",
             Kind::User(User::ManualUpgrade) => "upgrade expected but low level API in use",
+            Kind::User(User::UpgradeRefused) => "upgrade refused, the connection was closed",
             Kind::User(User::DispatchGone) => "dispatch task is gone",
         }
     }

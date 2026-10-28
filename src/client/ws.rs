@@ -363,6 +363,11 @@ impl WebSocketRequestBuilder {
     }
 
     /// Sends the request and returns and [`WebSocketResponse`].
+    ///
+    /// # Preconnected stream
+    ///
+    /// A client built with [`ClientBuilder::tcp_stream`](crate::ClientBuilder::tcp_stream) refuses
+    /// HTTP/1 upgrades, so the handshake fails with an upgrade error and the connection is closed.
     pub async fn send(self) -> Result<WebSocketResponse, Error> {
         let (client, request) = self.inner.build_split();
         let mut request = request?;

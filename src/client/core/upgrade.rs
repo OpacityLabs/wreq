@@ -199,6 +199,13 @@ impl Pending {
         trace!("pending upgrade handled manually");
         let _ = self.tx.send(Err(Error::new_user_manual_upgrade()));
     }
+
+    /// Don't fulfill the pending Upgrade: the client keeps its I/O and closes it instead.
+    #[inline]
+    pub(super) fn refuse(self) {
+        trace!("pending upgrade refused");
+        let _ = self.tx.send(Err(Error::new_user_upgrade_refused()));
+    }
 }
 
 // ===== impl UpgradeExpected =====

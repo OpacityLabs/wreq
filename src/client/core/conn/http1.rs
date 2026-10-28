@@ -173,7 +173,21 @@ where
 {
     /// Enable this connection to support higher-level HTTP upgrades.
     pub fn with_upgrades(self) -> upgrades::UpgradeableConnection<T, B> {
-        upgrades::UpgradeableConnection { inner: Some(self) }
+        upgrades::UpgradeableConnection {
+            inner: Some(self),
+            allow_upgrades: true,
+        }
+    }
+
+    /// Refuse HTTP upgrades on this connection.
+    ///
+    /// A `101 Switching Protocols` response is still returned to the caller, but the I/O is
+    /// dropped instead of handed out, and polling the upgrade fails with "upgrade refused".
+    pub fn refusing_upgrades(self) -> upgrades::UpgradeableConnection<T, B> {
+        upgrades::UpgradeableConnection {
+            inner: Some(self),
+            allow_upgrades: false,
+        }
     }
 }
 
@@ -316,6 +330,7 @@ mod upgrades {
         B::Error: Into<BoxError>,
     {
         pub(super) inner: Option<Connection<T, B>>,
+        pub(super) allow_upgrades: bool,
     }
 
     impl<I, B> Future for UpgradeableConnection<I, B>
@@ -332,7 +347,12 @@ mod upgrades {
                 Ok(proto::Dispatched::Shutdown) => Poll::Ready(Ok(())),
                 Ok(proto::Dispatched::Upgrade(pending)) => {
                     let Parts { io, read_buf } = self.inner.take().unwrap().into_parts();
-                    pending.fulfill(Upgraded::new(io, read_buf));
+                    if self.allow_upgrades {
+                        pending.fulfill(Upgraded::new(io, read_buf));
+                    } else {
+                        // Dropping `io` here closes the connection.
+                        pending.refuse();
+                    }
                     Poll::Ready(Ok(()))
                 }
                 Err(e) => Poll::Ready(Err(e)),

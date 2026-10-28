@@ -73,10 +73,13 @@ impl ConnectRequest {
     where
         T: Into<Option<RequestOptions>>,
     {
+        // The key is the canonical origin, so a URI as written and a redirect's resolved target
+        // share a connection. The URI dialled stays as written.
+        let key = util::canonical_origin(&uri);
         ConnectRequest {
-            uri: uri.clone(),
+            uri,
             identifier: Arc::new(HashMemo::with_hasher(
-                ConnectExtra::new(uri, identifier),
+                ConnectExtra::new(key, identifier),
                 HASHER,
             )),
         }
@@ -126,6 +129,8 @@ struct Config {
     retry_canceled_requests: bool,
     set_host: bool,
     ver: Ver,
+    pool_background_connect: bool,
+    http1_upgrades: bool,
 }
 
 // ===== impl HttpClient =====
@@ -395,7 +400,7 @@ where
                 //
                 // If it *wasn't* ready yet, then the connect future will
                 // have been started...
-                if connecting.started() {
+                if connecting.started() && self.config.pool_background_connect {
                     let bg = connecting
                         .map_err(|_err| {
                             trace!("background connect error: {}", _err);
@@ -462,6 +467,7 @@ where
             _ => self.config.ver,
         };
         let is_ver_h2 = ver == Ver::Http2;
+        let http1_upgrades = self.config.http1_upgrades;
         let connector = self.connector.clone();
         lazy(move || {
             // Try to take a "connecting lock".
@@ -480,8 +486,10 @@ where
             Either::Left(
                 Oneshot::new(connector, req)
                     .map_err(|src| Error::new(ErrorKind::Connect, src))
-                    .and_then(move |io| {
-                        let connected = io.connected();
+                    .and_then(move |mut io| {
+                        // The lease stays with the pooled connection, so a connect waiting on a
+                        // preconnected stream ends when the pool can no longer hand this one out.
+                        let connected = io.connected().with_lease(io.take_lease());
                         // If ALPN is h2 and we aren't http2_only already,
                         // then we need to convert our pool checkout into
                         // a single HTTP2 one.
@@ -544,9 +552,13 @@ where
                                     // Spawn the connection task in the background using the executor.
                                     // The task manages the HTTP/1.1 connection, including upgrades (e.g., WebSocket).
                                     // Errors are sent via err_tx to ensure they can be checked if the sender (tx) fails.
-                                    executor.execute(
+                                    let conn = if http1_upgrades {
                                         conn.with_upgrades()
-                                                .map_err(|e| {
+                                    } else {
+                                        conn.refusing_upgrades()
+                                    };
+                                    executor.execute(
+                                        conn.map_err(|e| {
                                                 // Log the connection error at debug level for diagnostic purposes.
                                                 debug!("client connection error: {:?}", e);
                                                 // Log that the error is being sent to the error channel.
@@ -837,6 +849,8 @@ impl Builder {
                 retry_canceled_requests: true,
                 set_host: true,
                 ver: Ver::Auto,
+                pool_background_connect: true,
+                http1_upgrades: true,
             },
             exec: exec.clone(),
 
@@ -963,6 +977,36 @@ impl Builder {
     #[inline]
     pub fn retry_canceled_requests(mut self, val: bool) -> Self {
         self.config.retry_canceled_requests = val;
+        self
+    }
+
+    /// Set whether a connect that loses the race to an idle pooled connection finishes in the
+    /// background.
+    ///
+    /// The finished connection goes into the pool, so its socket is not wasted. Disable this when
+    /// the connector carries only one connection. Its losing connect can only wait for that
+    /// connection to go away. In the background it holds the pool, and the pool holds the
+    /// connection, so the socket outlives the client: until `pool_idle_timeout` evicts the
+    /// connection, or for good when there is no idle timeout.
+    ///
+    /// Default is `true`.
+    #[inline]
+    pub fn pool_background_connect(mut self, val: bool) -> Self {
+        self.config.pool_background_connect = val;
+        self
+    }
+
+    /// Set whether HTTP/1 connections hand their socket out on a `101 Switching Protocols`
+    /// response.
+    ///
+    /// When disabled, the 101 response is still returned, but the connection is closed instead
+    /// of becoming an `Upgraded` stream, and `Response::upgrade` fails. Disable this when the
+    /// connector carries only one connection and the socket must stay with the client.
+    ///
+    /// Default is `true`.
+    #[inline]
+    pub fn http1_upgrades(mut self, val: bool) -> Self {
+        self.config.http1_upgrades = val;
         self
     }
 
