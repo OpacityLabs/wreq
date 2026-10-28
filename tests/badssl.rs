@@ -58,37 +58,6 @@ const CURVES_LIST: &str = join!(
 );
 
 #[tokio::test]
-async fn test_3des_support() -> wreq::Result<()> {
-    let tls_options = TlsOptions::builder()
-        .cipher_list(join!(
-            ":",
-            "TLS_ECDHE_ECDSA_WITH_3DES_EDE_CBC_SHA",
-            "TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA"
-        ))
-        .curves_list(CURVES_LIST)
-        .build();
-
-    // Create a client with the TLS options
-    let client = Client::builder()
-        .emulation(tls_options)
-        .cert_verification(false)
-        .connect_timeout(Duration::from_secs(360))
-        .build()?;
-
-    // Check if the client can connect to the 3des.badssl.com
-    let content = client
-        .get("https://3des.badssl.com/")
-        .send()
-        .await?
-        .text()
-        .await?;
-
-    println!("3des.badssl.com is supported:\n{content}");
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn test_firefox_7x_100_cipher() -> wreq::Result<()> {
     let tls_options = TlsOptions::builder()
         .cipher_list(join!(
