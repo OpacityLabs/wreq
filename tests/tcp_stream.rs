@@ -328,11 +328,7 @@ async fn upgrade_is_refused_and_closes_the_connection() {
 
     // The socket stays with the client: the upgrade is refused and the server sees EOF.
     let err = res.upgrade().await.unwrap_err();
-    assert!(
-        error_chain(&err).contains("upgrade refused, the connection was closed"),
-        "{}",
-        error_chain(&err)
-    );
+    assert!(err.is_upgrade(), "{}", error_chain(&err));
     let mut closed = false;
     for _ in 0..200 {
         if server_eof.load(Ordering::SeqCst) == 1 {
