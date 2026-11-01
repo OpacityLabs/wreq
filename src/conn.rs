@@ -10,10 +10,6 @@ pub(super) mod http;
 pub(super) mod net;
 pub(super) mod proxy;
 
-pub(super) use preconnected::Lease;
-#[cfg(feature = "tokio-rt")]
-pub(super) use preconnected::Preconnected;
-
 use std::{
     fmt::{self, Debug, Formatter},
     io,
@@ -30,6 +26,9 @@ use ::http::{Extensions, HeaderMap, HeaderValue};
 #[cfg(any(feature = "tokio-rt", feature = "compio-rt"))]
 use net::TcpConnector;
 use pin_project_lite::pin_project;
+pub(super) use preconnected::Lease;
+#[cfg(feature = "tokio-rt")]
+pub(super) use preconnected::Preconnected;
 use tls_info::TlsInfoFactory;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_btls::SslStream;
