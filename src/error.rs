@@ -1,8 +1,9 @@
 use std::{error::Error as StdError, fmt, io};
 
 use http::Uri;
+use wreq_proto::ext::ReasonPhrase;
 
-use crate::{StatusCode, client::ext::ReasonPhrase, util::Escape};
+use crate::{StatusCode, util::Escape};
 
 /// A `Result` alias where the `Err` case is `wreq::Error`.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -25,8 +26,22 @@ struct Inner {
     uri: Option<Uri>,
 }
 
+#[derive(Debug)]
+enum Kind {
+    Builder,
+    Request,
+    Tls,
+    Redirect,
+    Status(StatusCode, Option<ReasonPhrase>),
+    Body,
+    Decode,
+    Upgrade,
+    #[cfg(feature = "ws")]
+    WebSocket,
+}
+
 impl Error {
-    pub(crate) fn new<E>(kind: Kind, source: Option<E>) -> Error
+    fn new<E>(kind: Kind, source: Option<E>) -> Error
     where
         E: Into<BoxError>,
     {
@@ -39,43 +54,53 @@ impl Error {
         }
     }
 
+    #[inline]
     pub(crate) fn builder<E: Into<BoxError>>(e: E) -> Error {
         Error::new(Kind::Builder, Some(e))
     }
 
+    #[inline]
     pub(crate) fn body<E: Into<BoxError>>(e: E) -> Error {
         Error::new(Kind::Body, Some(e))
     }
 
+    #[inline]
     pub(crate) fn tls<E: Into<BoxError>>(e: E) -> Error {
         Error::new(Kind::Tls, Some(e))
     }
 
+    #[inline]
     pub(crate) fn decode<E: Into<BoxError>>(e: E) -> Error {
         Error::new(Kind::Decode, Some(e))
     }
 
+    #[inline]
     pub(crate) fn request<E: Into<BoxError>>(e: E) -> Error {
         Error::new(Kind::Request, Some(e))
     }
 
+    #[inline]
     pub(crate) fn redirect<E: Into<BoxError>>(e: E, uri: Uri) -> Error {
         Error::new(Kind::Redirect, Some(e)).with_uri(uri)
     }
 
+    #[inline]
     pub(crate) fn upgrade<E: Into<BoxError>>(e: E) -> Error {
         Error::new(Kind::Upgrade, Some(e))
     }
 
+    #[inline]
     #[cfg(feature = "ws")]
     pub(crate) fn websocket<E: Into<BoxError>>(e: E) -> Error {
         Error::new(Kind::WebSocket, Some(e))
     }
 
+    #[inline]
     pub(crate) fn status_code(uri: Uri, status: StatusCode, reason: Option<ReasonPhrase>) -> Error {
         Error::new(Kind::Status(status, reason), None::<Error>).with_uri(uri)
     }
 
+    #[inline]
     pub(crate) fn uri_bad_scheme(uri: Uri) -> Error {
         Error::new(Kind::Builder, Some(BadScheme)).with_uri(uri)
     }
@@ -101,6 +126,7 @@ impl Error {
     /// }
     /// # }
     /// ```
+    #[inline]
     pub fn uri(&self) -> Option<&Uri> {
         self.inner.uri.as_ref()
     }
@@ -110,11 +136,13 @@ impl Error {
     /// This is useful if you need to remove sensitive information from the URI
     /// (e.g. an API key in the query), but do not want to remove the URI
     /// entirely.
+    #[inline]
     pub fn uri_mut(&mut self) -> Option<&mut Uri> {
         self.inner.uri.as_mut()
     }
 
     /// Add a uri related to this error (overwriting any existing)
+    #[inline]
     pub fn with_uri(mut self, uri: Uri) -> Self {
         self.inner.uri = Some(uri);
         self
@@ -122,22 +150,26 @@ impl Error {
 
     /// Strip the related uri from this error (if, for example, it contains
     /// sensitive information)
+    #[inline]
     pub fn without_uri(mut self) -> Self {
         self.inner.uri = None;
         self
     }
 
     /// Returns true if the error is from a type Builder.
+    #[inline]
     pub fn is_builder(&self) -> bool {
         matches!(self.inner.kind, Kind::Builder)
     }
 
     /// Returns true if the error is from a `RedirectPolicy`.
+    #[inline]
     pub fn is_redirect(&self) -> bool {
         matches!(self.inner.kind, Kind::Redirect)
     }
 
     /// Returns true if the error is from `Response::error_for_status`.
+    #[inline]
     pub fn is_status(&self) -> bool {
         matches!(self.inner.kind, Kind::Status(_, _))
     }
@@ -151,16 +183,16 @@ impl Error {
                 return true;
             }
 
-            if let Some(core_err) = err.downcast_ref::<crate::client::CoreError>() {
-                if core_err.is_timeout() {
-                    return true;
-                }
+            if let Some(core_err) = err.downcast_ref::<wreq_proto::Error>()
+                && core_err.is_timeout()
+            {
+                return true;
             }
 
-            if let Some(io) = err.downcast_ref::<io::Error>() {
-                if io.kind() == io::ErrorKind::TimedOut {
-                    return true;
-                }
+            if let Some(io) = err.downcast_ref::<io::Error>()
+                && io.kind() == io::ErrorKind::TimedOut
+            {
+                return true;
             }
 
             source = err.source();
@@ -170,21 +202,22 @@ impl Error {
     }
 
     /// Returns true if the error is related to the request
+    #[inline]
     pub fn is_request(&self) -> bool {
         matches!(self.inner.kind, Kind::Request)
     }
 
     /// Returns true if the error is related to connect
     pub fn is_connect(&self) -> bool {
-        use crate::client::Error;
+        use crate::client::layer::client::Error;
 
         let mut source = self.source();
 
         while let Some(err) = source {
-            if let Some(err) = err.downcast_ref::<Error>() {
-                if err.is_connect() {
-                    return true;
-                }
+            if let Some(err) = err.downcast_ref::<Error>()
+                && err.is_connect()
+            {
+                return true;
             }
 
             source = err.source();
@@ -195,15 +228,15 @@ impl Error {
 
     /// Returns true if the error is related to proxy connect
     pub fn is_proxy_connect(&self) -> bool {
-        use crate::client::Error;
+        use crate::client::layer::client::Error;
 
         let mut source = self.source();
 
         while let Some(err) = source {
-            if let Some(err) = err.downcast_ref::<Error>() {
-                if err.is_proxy_connect() {
-                    return true;
-                }
+            if let Some(err) = err.downcast_ref::<Error>()
+                && err.is_proxy_connect()
+            {
+                return true;
             }
 
             source = err.source();
@@ -217,10 +250,10 @@ impl Error {
         let mut source = self.source();
 
         while let Some(err) = source {
-            if let Some(io) = err.downcast_ref::<io::Error>() {
-                if io.kind() == io::ErrorKind::ConnectionReset {
-                    return true;
-                }
+            if let Some(io) = err.downcast_ref::<io::Error>()
+                && io.kind() == io::ErrorKind::ConnectionReset
+            {
+                return true;
             }
             source = err.source();
         }
@@ -228,28 +261,48 @@ impl Error {
         false
     }
 
+    /// Returns true if the error is related to DNS resolution.
+    pub fn is_dns(&self) -> bool {
+        let mut source = self.source();
+
+        while let Some(err) = source {
+            if err.is::<DnsError>() {
+                return true;
+            }
+
+            source = err.source();
+        }
+
+        false
+    }
+
     /// Returns true if the error is related to the request or response body
+    #[inline]
     pub fn is_body(&self) -> bool {
         matches!(self.inner.kind, Kind::Body)
     }
 
     /// Returns true if the error is related to TLS
+    #[inline]
     pub fn is_tls(&self) -> bool {
         matches!(self.inner.kind, Kind::Tls)
     }
 
     /// Returns true if the error is related to decoding the response's body
+    #[inline]
     pub fn is_decode(&self) -> bool {
         matches!(self.inner.kind, Kind::Decode)
     }
 
     /// Returns true if the error is related to upgrading the connection
+    #[inline]
     pub fn is_upgrade(&self) -> bool {
         matches!(self.inner.kind, Kind::Upgrade)
     }
 
-    #[cfg(feature = "ws")]
     /// Returns true if the error is related to WebSocket operations
+    #[inline]
+    #[cfg(feature = "ws")]
     pub fn is_websocket(&self) -> bool {
         matches!(self.inner.kind, Kind::WebSocket)
     }
@@ -329,7 +382,7 @@ impl fmt::Display for Error {
                         f,
                         "{prefix} ({} {})",
                         code.as_str(),
-                        Escape::new(reason.as_bytes())
+                        Escape::new(reason.as_ref())
                     )?;
                 } else {
                     write!(f, "{prefix} ({code})")?;
@@ -350,23 +403,10 @@ impl fmt::Display for Error {
 }
 
 impl StdError for Error {
+    #[inline]
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         self.inner.source.as_ref().map(|e| &**e as _)
     }
-}
-
-#[derive(Debug)]
-pub(crate) enum Kind {
-    Builder,
-    Request,
-    Tls,
-    Redirect,
-    Status(StatusCode, Option<ReasonPhrase>),
-    Body,
-    Decode,
-    Upgrade,
-    #[cfg(feature = "ws")]
-    WebSocket,
 }
 
 #[derive(Debug)]
@@ -378,7 +418,12 @@ pub(crate) struct BadScheme;
 #[derive(Debug)]
 pub(crate) struct ProxyConnect(pub(crate) BoxError);
 
+#[derive(Debug)]
+pub(crate) struct DnsError(pub(crate) BoxError);
+
 // ==== impl TimedOut ====
+
+impl StdError for TimedOut {}
 
 impl fmt::Display for TimedOut {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -386,9 +431,9 @@ impl fmt::Display for TimedOut {
     }
 }
 
-impl StdError for TimedOut {}
-
 // ==== impl BadScheme ====
+
+impl StdError for BadScheme {}
 
 impl fmt::Display for BadScheme {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -396,9 +441,14 @@ impl fmt::Display for BadScheme {
     }
 }
 
-impl StdError for BadScheme {}
-
 // ==== impl ProxyConnect ====
+
+impl StdError for ProxyConnect {
+    #[inline]
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(&*self.0)
+    }
+}
 
 impl fmt::Display for ProxyConnect {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -406,9 +456,18 @@ impl fmt::Display for ProxyConnect {
     }
 }
 
-impl StdError for ProxyConnect {
+// ==== impl DnsError ====
+
+impl StdError for DnsError {
+    #[inline]
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         Some(&*self.0)
+    }
+}
+
+impl fmt::Display for DnsError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "dns resolution error: {}", self.0)
     }
 }
 
