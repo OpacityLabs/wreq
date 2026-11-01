@@ -1694,12 +1694,12 @@ impl ClientBuilder {
     /// - over HTTP/1.1, the 3xx response says `Connection: close`;
     /// - over HTTP/1.1, the redirect drops the 3xx response before the client has read its whole
     ///   body, for example a large body or one that arrives after the headers. The client then
-    ///   closes the connection. On a multi-threaded runtime, a small chunked body can also hit
-    ///   this now and then.
+    ///   closes the connection. On a multi-threaded runtime, a small chunked body can also hit this
+    ///   now and then.
     ///
     /// HTTP/1 upgrades are refused: the socket never leaves the client. A `101` response is
-    /// returned as is, but the connection is closed and [`Response::upgrade`](crate::Response::upgrade)
-    /// fails.
+    /// returned as is, but the connection is closed and
+    /// [`Response::upgrade`](crate::Response::upgrade) fails.
     ///
     /// The client owns the stream and closes it when the client and its connection drop.
     #[cfg(feature = "tokio-rt")]
