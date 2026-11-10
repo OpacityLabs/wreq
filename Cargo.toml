@@ -130,7 +130,7 @@ mime = { version = "0.3.17", optional = true }
 sync_wrapper = { version = "1.0.2", optional = true }
 
 ## webpki root certs
-webpki-root-certs = { version = "1.0.7", optional = true }
+webpki-root-certs = { version = "1.0.11", optional = true }
 
 ## cookies
 cookie = { version = "0.18", optional = true }
